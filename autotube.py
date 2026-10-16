@@ -745,7 +745,7 @@ def record(work, kind, meta, desc, duration, vid, thumb):
 
 
 def publish_pending():
-    rows = sb_rest("GET", "videos?select=id,youtube_id,title&publish_requested=is.true&status=neq.published"
+    rows = sb_rest("GET", "videos?select=id,youtube_id,title,meta&publish_requested=is.true&status=neq.published"
                           "&youtube_id=not.is.null")
     for row in rows:
         try:
@@ -755,6 +755,7 @@ def publish_pending():
                 "status": "published", "privacy": "public",
                 "published_at": datetime.datetime.now(datetime.timezone.utc).isoformat()})
             log(f"published https://youtu.be/{row['youtube_id']} | {row['title']}")
+            after_upload(row["youtube_id"], comment=(row.get("meta") or {}).get("pinned_comment"))
         except Exception as e:
             log(f"publish failed {row['youtube_id']}: {str(e)[:200]}")
     if not rows:
@@ -857,7 +858,9 @@ def main():
             if not args.no_upload:
                 vid = upload(r["video"], meta["title"], desc, meta.get("tags", []), kind == "short")
                 log(f"[{kind}] uploaded https://youtu.be/{vid}")
-                after_upload(vid, thumb, meta.get("pinned_comment"))
+                # YouTube rejects comments on private videos; publish_pending() posts it once public.
+                public_now = os.environ.get("YT_PRIVACY", "private") == "public"
+                after_upload(vid, thumb, meta.get("pinned_comment") if public_now else None)
                 entry["youtube_id"] = vid
             record(work, kind, meta, desc, r["duration"], vid, thumb)
             history.append(entry)

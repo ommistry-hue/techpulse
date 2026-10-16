@@ -28,7 +28,8 @@ jobs:
         env:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
-        run: printf 'window.TP_CONFIG = {url: "%s", key: "%s"};\n' "$SUPABASE_URL" "$SUPABASE_ANON_KEY" > app/config.js
+        run: |
+          printf 'window.TP_CONFIG = {url: "%s", key: "%s"};\n' "$SUPABASE_URL" "$SUPABASE_ANON_KEY" > app/config.js
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
