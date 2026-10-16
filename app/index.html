@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TechPulse Studio</title>
+<meta name="description" content="Review, publish and track TechPulse videos">
+<meta name="theme-color" content="#0b1220">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<style>
+  :root {
+    --bg: #0b1220; --surface: #131c2e; --surface-2: #1b2640; --line: #26324d;
+    --text: #e8edf7; --muted: #8d9ab5; --accent: #ffd400; --accent-ink: #1a1400;
+    --ok: #3ddc97; --warn: #ffb020; --danger: #ff6b6b; --link: #7cb7ff;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f4f6fb; --surface: #ffffff; --surface-2: #eef1f8; --line: #dde3ef;
+      --text: #121826; --muted: #5d6880; --accent: #e8b800; --accent-ink: #1a1400;
+      --ok: #108a57; --warn: #b26b00; --danger: #c53030; --link: #1a5fd6;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0b1220; --surface: #131c2e; --surface-2: #1b2640; --line: #26324d;
+    --text: #e8edf7; --muted: #8d9ab5; --accent: #ffd400; --accent-ink: #1a1400;
+    --ok: #3ddc97; --warn: #ffb020; --danger: #ff6b6b; --link: #7cb7ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
+  header { position: sticky; top: 0; z-index: 5; background: var(--bg);
+    padding: calc(12px + env(safe-area-inset-top)) 16px 12px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 10px; }
+  .logo { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); color: var(--accent-ink);
+    font-weight: 900; display: grid; place-items: center; font-size: 13px; flex: none; }
+  h1 { font-size: 17px; margin: 0; flex: 1; }
+  .icon-btn { border: 1px solid var(--line); background: var(--surface-2); color: var(--text); border-radius: 10px;
+    min-height: 40px; padding: 0 12px; font: inherit; font-weight: 600; cursor: pointer; }
+  main { padding: 14px 16px; max-width: 720px; margin: 0 auto; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; margin-bottom: 12px; overflow: hidden; }
+  .row { display: flex; gap: 12px; padding: 12px; align-items: flex-start; cursor: pointer; }
+  .thumb { flex: none; width: 104px; aspect-ratio: 16/9; border-radius: 8px; background: var(--surface-2) center/cover;
+    display: grid; place-items: center; color: var(--muted); font-size: 18px; }
+  .thumb.short { width: 58px; aspect-ratio: 9/16; }
+  .meta { min-width: 0; flex: 1; }
+  .title { font-weight: 650; margin: 0 0 6px; overflow-wrap: anywhere; }
+  .sub { color: var(--muted); font-size: 12.5px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .badge { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 6px; background: var(--surface-2); }
+  .b-long { color: var(--link); } .b-short { color: var(--danger); }
+  .b-public { color: var(--ok); } .b-private { color: var(--muted); } .b-pending { color: var(--warn); }
+  .detail { border-top: 1px solid var(--line); padding: 12px; display: none; }
+  .open .detail { display: block; }
+  video { width: 100%; max-height: 70vh; background: #000; border-radius: 10px; display: block; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12.5px/1.5 ui-monospace, Consolas, monospace;
+    background: var(--surface-2); padding: 10px; border-radius: 10px; margin: 10px 0 0; color: var(--muted);
+    max-height: 260px; overflow: auto; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .btn { appearance: none; border: 1px solid var(--line); background: var(--surface-2); color: var(--text);
+    font: inherit; font-weight: 600; padding: 10px 14px; border-radius: 10px; cursor: pointer; text-decoration: none;
+    min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+  .primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  .btn:disabled { opacity: .5; cursor: default; }
+  nav { position: fixed; bottom: 0; left: 0; right: 0; background: var(--surface); border-top: 1px solid var(--line);
+    display: flex; padding-bottom: env(safe-area-inset-bottom); z-index: 5; }
+  nav button { flex: 1; border: 0; background: none; color: var(--muted); min-height: 60px; font: inherit; font-weight: 600; cursor: pointer; }
+  nav button.on { color: var(--accent); }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
+  .panel h2 { font-size: 15px; margin: 0 0 10px; }
+  .tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+  .tile { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
+  .tile b { display: block; font-size: 24px; font-variant-numeric: tabular-nums; }
+  .tile span { color: var(--muted); font-size: 12.5px; }
+  .list-row { display: flex; justify-content: space-between; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .list-row:last-child { border-bottom: 0; }
+  .list-row .t { min-width: 0; overflow-wrap: anywhere; }
+  .list-row .n { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  input[type=email], input[type=password] { font: inherit; color: var(--text); background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-height: 44px; width: 100%; }
+  .hint { color: var(--muted); font-size: 12.5px; margin: 8px 0 0; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 10px; }
+  #login { max-width: 360px; margin: 14vh auto 0; padding: 0 16px; text-align: center; }
+  #login form, .stack { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; }
+  .err { color: var(--danger); font-size: 13px; min-height: 18px; }
+  .toast { position: fixed; left: 16px; right: 16px; bottom: calc(80px + env(safe-area-inset-bottom)); z-index: 9;
+    background: var(--text); color: var(--bg); padding: 12px 14px; border-radius: 10px; font-weight: 600;
+    max-width: 520px; margin: 0 auto; opacity: 0; transform: translateY(8px); transition: .2s; pointer-events: none; }
+  .toast.show { opacity: 1; transform: none; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="login" hidden>
+  <div class="logo" style="margin:0 auto;width:56px;height:56px;font-size:22px;border-radius:14px">TP</div>
+  <h1 style="margin-top:14px">TechPulse Studio</h1>
+  <form id="loginForm">
+    <input type="email" id="email" placeholder="Email" autocomplete="username" required>
+    <input type="password" id="pw" placeholder="Password" autocomplete="current-password" required>
+    <button class="btn primary" type="submit">Log in</button>
+    <div class="err" id="loginErr"></div>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <div class="logo">TP</div>
+    <h1>TechPulse Studio</h1>
+    <button class="icon-btn" id="reload">Refresh</button>
+  </header>
+  <main>
+    <section id="tab-videos"></section>
+    <section id="tab-stats" hidden></section>
+    <section id="tab-account" hidden>
+      <div class="panel">
+        <h2>Account</h2>
+        <div class="hint" id="who"></div>
+        <form class="stack" id="pwForm">
+          <input type="password" id="newPw" placeholder="New password (min 8 characters)" minlength="8" autocomplete="new-password" required>
+          <button class="btn" type="submit">Change password</button>
+        </form>
+        <div class="actions"><button class="btn" id="logout">Log out</button></div>
+      </div>
+      <div class="panel">
+        <h2>How it works</h2>
+        <p class="hint">New videos are made automatically 3 times a day and uploaded to YouTube as private.
+          Watch them here, tap Publish, and they go public within about 10 minutes.
+          Videos older than 7 days are removed from this app (they stay on YouTube).</p>
+      </div>
+    </section>
+  </main>
+  <nav>
+    <button data-tab="videos" class="on">Videos</button>
+    <button data-tab="stats">Stats</button>
+    <button data-tab="account">Account</button>
+  </nav>
+</div>
+<div class="toast" id="toast"></div>
+
+<script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const cfg = window.TP_CONFIG || {};
+const db = supabase.createClient(cfg.url, cfg.key);
+let videos = [], thumbs = {}, openId = null;
+
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2800);
+}
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const num = n => new Intl.NumberFormat(undefined, { notation: "compact" }).format(n || 0);
+const when = iso => new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+
+function state(v) {
+  if (!v.youtube_id) return ["NOT UPLOADED", "b-private"];
+  if (v.status === "published" || v.privacy === "public") return ["PUBLIC", "b-public"];
+  if (v.publish_requested) return ["PUBLISHING...", "b-pending"];
+  return ["PRIVATE", "b-private"];
+}
+
+async function loadVideos() {
+  const { data, error } = await db.from("videos").select("*").order("created_at", { ascending: false });
+  if (error) { toast("Error: " + error.message); return; }
+  videos = data;
+  const paths = videos.map(v => v.thumb_path).filter(Boolean);
+  if (paths.length) {
+    const { data: urls } = await db.storage.from("videos").createSignedUrls(paths, 3600);
+    (urls || []).forEach(u => { if (u.signedUrl) thumbs[u.path] = u.signedUrl; });
+  }
+  renderVideos(); renderStats();
+}
+
+function renderVideos() {
+  const box = $("#tab-videos");
+  if (!videos.length) { box.innerHTML = '<div class="empty">No videos yet. New ones appear here after each automatic run.</div>'; return; }
+  box.innerHTML = videos.map(v => {
+    const [label, cls] = state(v), s = v.stats || {}, th = thumbs[v.thumb_path];
+    return `<div class="card ${v.id === openId ? "open" : ""}" data-id="${v.id}">
+      <div class="row">
+        <div class="thumb ${v.kind === "short" ? "short" : ""}" style="${th ? `background-image:url('${esc(th)}')` : ""}">${th ? "" : "▶"}</div>
+        <div class="meta">
+          <p class="title">${esc(v.title)}</p>
+          <div class="sub">
+            <span class="badge ${v.kind === "long" ? "b-long" : "b-short"}">${v.kind === "long" ? "LONG" : "SHORT"}</span>
+            <span class="badge ${cls}">${label}</span>
+            <span>${when(v.created_at)}</span>
+            ${v.youtube_id ? `<span>${num(s.viewCount)} views · ${num(s.likeCount)} likes</span>` : ""}
+          </div>
+        </div>
+      </div>
+      <div class="detail" id="d-${v.id}"></div>
+    </div>`;
+  }).join("");
+  if (openId) fillDetail(videos.find(v => v.id === openId));
+}
+
+async function fillDetail(v) {
+  if (!v) return;
+  const el = $("#d-" + v.id);
+  const [label] = state(v);
+  const canPublish = v.youtube_id && label === "PRIVATE";
+  el.innerHTML = `<div class="hint">Loading video...</div>`;
+  let src = "";
+  if (v.preview_path) {
+    const { data } = await db.storage.from("videos").createSignedUrl(v.preview_path, 3600);
+    src = data?.signedUrl || "";
+  }
+  el.innerHTML = `${src ? `<video src="${esc(src)}" controls playsinline preload="metadata"></video>` : '<div class="hint">Preview not available.</div>'}
+    <div class="actions">
+      ${canPublish ? `<button class="btn primary" data-act="publish">Publish to YouTube</button>` : ""}
+      ${label === "PUBLISHING..." ? `<button class="btn" data-act="cancel">Cancel publish</button>` : ""}
+      ${v.youtube_id ? `<a class="btn" href="https://youtu.be/${esc(v.youtube_id)}" target="_blank" rel="noopener">Open on YouTube</a>` : ""}
+    </div>
+    <pre>${esc(v.description || "(no description)")}</pre>`;
+}
+
+$("#tab-videos").addEventListener("click", async e => {
+  const card = e.target.closest(".card"); if (!card) return;
+  const v = videos.find(x => x.id === card.dataset.id);
+  const act = e.target.closest("[data-act]")?.dataset.act;
+  if (act) {
+    const { error } = await db.from("videos").update({ publish_requested: act === "publish" }).eq("id", v.id);
+    if (error) return toast("Error: " + error.message);
+    v.publish_requested = act === "publish";
+    toast(act === "publish" ? "Queued. It goes public within ~10 minutes." : "Publish cancelled");
+    renderVideos();
+    return;
+  }
+  if (e.target.closest(".row")) { openId = openId === v.id ? null : v.id; renderVideos(); }
+});
+
+function renderStats() {
+  const up = videos.filter(v => v.youtube_id), st = v => v.stats || {};
+  const views = up.reduce((a, v) => a + (st(v).viewCount || 0), 0);
+  const likes = up.reduce((a, v) => a + (st(v).likeCount || 0), 0);
+  const comments = up.reduce((a, v) => a + (st(v).commentCount || 0), 0);
+  const top = [...up].sort((a, b) => (st(b).viewCount || 0) - (st(a).viewCount || 0)).slice(0, 8);
+  $("#tab-stats").innerHTML = `
+    <div class="tiles">
+      <div class="tile"><b>${num(views)}</b><span>Views (last 7 days of videos)</span></div>
+      <div class="tile"><b>${num(likes)}</b><span>Likes</span></div>
+      <div class="tile"><b>${num(comments)}</b><span>Comments</span></div>
+      <div class="tile"><b>${up.length}</b><span>Videos uploaded</span></div>
+    </div>
+    <div class="panel"><h2>Top videos</h2>
+      ${top.length ? top.map(v => `<div class="list-row"><span class="t">${esc(v.title)}</span><span class="n">${num(st(v).viewCount)} views</span></div>`).join("")
+        : '<div class="hint">No stats yet. They update after each automatic run.</div>'}
+    </div>`;
+}
+
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
+  ["videos", "stats", "account"].forEach(t => $("#tab-" + t).hidden = t !== b.dataset.tab);
+});
+$("#reload").onclick = () => { loadVideos(); toast("Refreshed"); };
+
+$("#loginForm").onsubmit = async e => {
+  e.preventDefault(); $("#loginErr").textContent = "";
+  const { error } = await db.auth.signInWithPassword({ email: $("#email").value.trim(), password: $("#pw").value });
+  if (error) $("#loginErr").textContent = error.message; else start();
+};
+$("#pwForm").onsubmit = async e => {
+  e.preventDefault();
+  const { error } = await db.auth.updateUser({ password: $("#newPw").value });
+  toast(error ? "Error: " + error.message : "Password changed"); if (!error) $("#newPw").value = "";
+};
+$("#logout").onclick = async () => { await db.auth.signOut(); location.reload(); };
+
+async function start() {
+  const { data: { session } } = await db.auth.getSession();
+  if (!session) { $("#app").hidden = true; $("#login").hidden = false; return; }
+  $("#login").hidden = true; $("#app").hidden = false;
+  $("#who").textContent = "Logged in as " + session.user.email;
+  loadVideos();
+}
+if (!cfg.url) document.body.innerHTML = '<div class="empty">App is not configured yet.</div>';
+else start();
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+</script>
+</body>
+</html>

@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TechPulse Studio</title>
+<meta name="theme-color" content="#0b1220">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<style>
+  :root {
+    --bg: #0b1220; --surface: #131c2e; --surface-2: #1b2640; --line: #26324d;
+    --text: #e8edf7; --muted: #8d9ab5; --accent: #ffd400; --accent-ink: #1a1400;
+    --ok: #3ddc97; --warn: #ffb020; --danger: #ff6b6b; --link: #7cb7ff;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f4f6fb; --surface: #ffffff; --surface-2: #eef1f8; --line: #dde3ef;
+      --text: #121826; --muted: #5d6880; --accent: #e8b800; --accent-ink: #1a1400;
+      --ok: #108a57; --warn: #b26b00; --danger: #c53030; --link: #1a5fd6;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
+  header { position: sticky; top: 0; z-index: 5; background: var(--bg);
+    padding: calc(12px + env(safe-area-inset-top)) 16px 12px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 10px; }
+  .logo { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); color: var(--accent-ink);
+    font-weight: 900; display: grid; place-items: center; font-size: 13px; }
+  h1 { font-size: 17px; margin: 0; flex: 1; letter-spacing: .2px; }
+  .pill { font-size: 12px; padding: 4px 10px; border-radius: 99px; background: var(--surface-2); color: var(--muted);
+    display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .pill.run { color: var(--warn); }
+  .pill.run::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--warn);
+    animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+  main { padding: 14px 16px; max-width: 720px; margin: 0 auto; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; margin-bottom: 12px; overflow: hidden; }
+  .row { display: flex; gap: 12px; padding: 12px; align-items: flex-start; cursor: pointer; }
+  .thumb { flex: none; width: 104px; aspect-ratio: 16/9; border-radius: 8px; background: var(--surface-2) center/cover;
+    display: grid; place-items: center; color: var(--muted); font-size: 11px; }
+  .thumb.short { width: 58px; aspect-ratio: 9/16; }
+  .meta { min-width: 0; flex: 1; }
+  .title { font-weight: 650; margin: 0 0 4px; overflow-wrap: anywhere; }
+  .sub { color: var(--muted); font-size: 12.5px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .badge { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 6px; background: var(--surface-2); }
+  .badge.long { color: var(--link); } .badge.short { color: var(--danger); }
+  .badge.up { color: var(--ok); } .badge.local { color: var(--muted); }
+  .detail { border-top: 1px solid var(--line); padding: 12px; display: none; }
+  .open .detail { display: block; }
+  video { width: 100%; max-height: 70vh; background: #000; border-radius: 10px; display: block; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12.5px/1.5 ui-monospace, Consolas, monospace;
+    background: var(--surface-2); padding: 10px; border-radius: 10px; margin: 10px 0 0; color: var(--muted); }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  button, .btn { appearance: none; border: 1px solid var(--line); background: var(--surface-2); color: var(--text);
+    font: inherit; font-weight: 600; padding: 10px 14px; border-radius: 10px; cursor: pointer; text-decoration: none;
+    min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+  .primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  button:disabled { opacity: .5; cursor: default; }
+  nav { position: fixed; bottom: 0; left: 0; right: 0; background: var(--surface); border-top: 1px solid var(--line);
+    display: flex; padding-bottom: env(safe-area-inset-bottom); z-index: 5; }
+  nav button { flex: 1; border: 0; border-radius: 0; background: none; color: var(--muted); min-height: 60px; }
+  nav button.on { color: var(--accent); }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
+  .panel h2 { font-size: 15px; margin: 0 0 10px; }
+  label.opt { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0;
+    border-bottom: 1px solid var(--line); }
+  label.opt:last-of-type { border-bottom: 0; }
+  select, input[type=password] { font: inherit; color: var(--text); background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-height: 44px; }
+  input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--accent); }
+  .hint { color: var(--muted); font-size: 12.5px; margin: 8px 0 0; }
+  #log { max-height: 65vh; overflow: auto; margin: 0; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 10px; }
+  #login { max-width: 360px; margin: 18vh auto 0; padding: 0 16px; text-align: center; }
+  #login form { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; }
+  .err { color: var(--danger); font-size: 13px; min-height: 18px; }
+  .toast { position: fixed; left: 16px; right: 16px; bottom: calc(80px + env(safe-area-inset-bottom)); z-index: 9;
+    background: var(--text); color: var(--bg); padding: 12px 14px; border-radius: 10px; font-weight: 600;
+    max-width: 520px; margin: 0 auto; opacity: 0; transform: translateY(8px); transition: .2s; pointer-events: none; }
+  .toast.show { opacity: 1; transform: none; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="login" hidden>
+  <div class="logo" style="margin:0 auto;width:56px;height:56px;font-size:22px;border-radius:14px">TP</div>
+  <h1 style="margin-top:14px">TechPulse Studio</h1>
+  <form id="loginForm">
+    <input type="password" id="pw" placeholder="Dashboard password" autocomplete="current-password" required>
+    <button class="primary" type="submit">Log in</button>
+    <div class="err" id="loginErr"></div>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <div class="logo">TP</div>
+    <h1>TechPulse Studio</h1>
+    <span class="pill" id="status">Idle</span>
+  </header>
+  <main>
+    <section id="tab-videos"></section>
+    <section id="tab-run" hidden>
+      <div class="panel">
+        <h2>Make videos now</h2>
+        <label class="opt">Long video (3-5 min) <input type="checkbox" id="optLong" checked></label>
+        <label class="opt">Shorts
+          <select id="optShorts"><option>0</option><option selected>1</option><option>2</option><option>3</option><option>4</option></select>
+        </label>
+        <label class="opt">Upload to YouTube automatically <input type="checkbox" id="optUpload"></label>
+        <div class="actions"><button class="primary" id="runBtn">Start</button></div>
+        <p class="hint">Takes about 8-12 minutes. Leave upload off to review videos first, then tap Upload on each card.
+          Daily limit: about 6 uploads.</p>
+      </div>
+    </section>
+    <section id="tab-log" hidden>
+      <div class="actions" style="margin:0 0 10px"><button id="refreshLog">Refresh</button></div>
+      <pre id="log"></pre>
+    </section>
+  </main>
+  <nav>
+    <button data-tab="videos" class="on">Videos</button>
+    <button data-tab="run">Run</button>
+    <button data-tab="log">Log</button>
+  </nav>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+let state = { items: [], running: false, log: "" }, openId = null, timer = null;
+
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2600);
+}
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+function when(ts) {
+  const d = new Date(ts * 1000);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " +
+         d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+  if (r.status === 401) { showLogin(); throw new Error("login"); }
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || r.status);
+  return data;
+}
+
+function showLogin() { $("#app").hidden = true; $("#login").hidden = false; $("#pw").focus(); }
+$("#loginForm").onsubmit = async e => {
+  e.preventDefault(); $("#loginErr").textContent = "";
+  try { await api("/api/login", { password: $("#pw").value }); $("#login").hidden = true; load(); }
+  catch (err) { if (err.message !== "login") $("#loginErr").textContent = "Wrong password"; }
+};
+
+function renderVideos() {
+  const box = $("#tab-videos");
+  if (!state.items.length) { box.innerHTML = '<div class="empty">No videos yet. Start one from the Run tab.</div>'; return; }
+  box.innerHTML = state.items.map(v => `
+    <div class="card ${v.id === openId ? "open" : ""}" data-id="${esc(v.id)}">
+      <div class="row">
+        <div class="thumb ${v.kind}" style="${v.thumb ? `background-image:url('${esc(v.thumb)}')` : ""}">${v.thumb ? "" : "▶"}</div>
+        <div class="meta">
+          <p class="title">${esc(v.title)}</p>
+          <div class="sub">
+            <span class="badge ${v.kind}">${v.kind === "long" ? "LONG" : "SHORT"}</span>
+            <span class="badge ${v.youtube_id ? "up" : "local"}">${v.youtube_id ? "UPLOADED" : "NOT UPLOADED"}</span>
+            <span>${when(v.mtime)}</span>
+          </div>
+        </div>
+      </div>
+      <div class="detail">${v.id === openId ? detail(v) : ""}</div>
+    </div>`).join("");
+}
+
+function detail(v) {
+  const yt = v.youtube_id ? `<a class="btn" href="https://youtu.be/${esc(v.youtube_id)}" target="_blank" rel="noopener">Open on YouTube</a>` : "";
+  const up = !v.youtube_id && v.can_upload ? `<button class="primary" data-upload="${esc(v.id)}" ${state.running ? "disabled" : ""}>Upload to YouTube</button>` : "";
+  return `<video src="${esc(v.video)}" controls playsinline preload="metadata" ${v.thumb ? `poster="${esc(v.thumb)}"` : ""}></video>
+    <div class="actions">${up}${yt}<a class="btn" href="${esc(v.video)}" download>Download</a></div>
+    <pre>${esc(v.description || "(no description)")}</pre>`;
+}
+
+$("#tab-videos").addEventListener("click", async e => {
+  const upBtn = e.target.closest("[data-upload]");
+  if (upBtn) {
+    if (!confirm("Upload this video to YouTube now?")) return;
+    try { const r = await api("/api/upload", { id: upBtn.dataset.upload }); toast(r.started ? "Uploading... check the Log tab" : "Another job is running"); refresh(); }
+    catch (err) { if (err.message !== "login") toast("Error: " + err.message); }
+    return;
+  }
+  const row = e.target.closest(".row");
+  if (!row) return;
+  const id = row.parentElement.dataset.id;
+  openId = openId === id ? null : id;
+  renderVideos();
+});
+
+$("#runBtn").onclick = async () => {
+  const body = { long: $("#optLong").checked, shorts: +$("#optShorts").value, upload: $("#optUpload").checked };
+  if (!body.long && !body.shorts) return toast("Pick at least one video");
+  try { const r = await api("/api/run", body); toast(r.started ? "Started. Check the Log tab" : "A job is already running"); refresh(); }
+  catch (err) { if (err.message !== "login") toast("Error: " + err.message); }
+};
+
+function renderStatus() {
+  const s = $("#status");
+  s.textContent = state.running ? "Running" : "Idle";
+  s.classList.toggle("run", state.running);
+  $("#runBtn").disabled = state.running;
+  const logEl = $("#log"), atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
+  logEl.textContent = state.log || "(no log yet)";
+  if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+}
+
+async function refresh() {
+  try {
+    const wasRunning = state.running;
+    const prevKey = state.items.map(i => i.id + i.youtube_id).join();
+    state = await api("/api/state");
+    renderStatus();
+    // Re-render the list only when it changed, so a playing video is not interrupted.
+    if (state.items.map(i => i.id + i.youtube_id).join() !== prevKey) renderVideos();
+    if (wasRunning && !state.running) toast("Job finished");
+  } catch (_) {}
+  clearTimeout(timer);
+  timer = setTimeout(refresh, state.running ? 4000 : 20000);
+}
+
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
+  ["videos", "run", "log"].forEach(t => $("#tab-" + t).hidden = t !== b.dataset.tab);
+  if (b.dataset.tab === "log") { const l = $("#log"); l.scrollTop = l.scrollHeight; }
+});
+$("#refreshLog").onclick = refresh;
+
+async function load() {
+  try { state = await api("/api/state"); } catch (_) { return; }
+  $("#app").hidden = false;
+  renderStatus(); renderVideos(); refresh();
+}
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+load();
+</script>
+</body>
+</html>

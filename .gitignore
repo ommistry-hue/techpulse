@@ -1,0 +1,19 @@
+﻿# Secrets - never commit
+.env
+.env.*
+!.env.example
+client_secret*.json
+token.json
+*.pem
+*.key
+
+# Local data
+.venv/
+output/
+logs/
+history.json
+__pycache__/
+*.pyc
+
+# Generated at deploy from repo variables
+app/config.js
