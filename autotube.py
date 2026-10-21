@@ -1972,6 +1972,15 @@ def update_goals():
     proj_s, proj_h = last["subscribers"] + rate_s * days_left, hours + rate_h * days_left
     ratio_s, ratio_h = proj_s / goals["subscribers"], proj_h / goals["watch_hours"]
     mode = "watch" if ratio_h < ratio_s else "reach"
+    views = {}
+    if goals.get("shorts_views"):  # Level 1 via Shorts: 3M Shorts views in 90 days + 500 subs -> always 'reach'
+        shorts = sb_rest("GET", f"insights?select=views,created_at&kind=eq.short&created_at=gte.{days_ago(90)}")
+        total = sum(r["views"] or 0 for r in shorts)
+        week = sum(r["views"] or 0 for r in shorts if r["created_at"] >= days_ago(7))
+        rate_v, proj_v = week / 7, total + week / 7 * days_left
+        ratio_h, mode = proj_v / goals["shorts_views"], "reach"
+        views = {"shorts_views": total, "need_views_per_day": round(max(0, goals["shorts_views"] - total) / days_left),
+                 "rate_views_per_day": round(rate_v), "projected_views": round(proj_v)}
     status = {
         "updated": datetime.datetime.now(datetime.timezone.utc).isoformat(), "days_left": days_left, "mode": mode,
         "subscribers": last["subscribers"], "watch_hours": hours,
@@ -1979,9 +1988,10 @@ def update_goals():
         "need_hours_per_day": round(max(0, goals["watch_hours"] - hours) / days_left, 1),
         "rate_subs_per_day": round(rate_s, 1), "rate_hours_per_day": round(rate_h, 1),
         "projected_subs": round(proj_s), "projected_hours": round(proj_h, 1),
-        "on_track": ratio_s >= 1 and ratio_h >= 1}
+        "on_track": ratio_s >= 1 and ratio_h >= 1, **views}
     sb_rest("PATCH", "settings?key=eq.goal_status", json={"value": status})
-    log(f"goals: {last['subscribers']}/{goals['subscribers']} subs, {hours}/{goals['watch_hours']} h; need "
+    log(f"goals: {last['subscribers']}/{goals['subscribers']} subs, {hours}/{goals['watch_hours']} h"
+        + (f", {views['shorts_views']}/{goals['shorts_views']} Shorts views" if views else "") + "; need "
         f"+{status['need_subs_per_day']} subs and +{status['need_hours_per_day']} h per day; strategy: {mode}")
 
 

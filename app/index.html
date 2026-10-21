@@ -298,11 +298,14 @@ function goalsPanel() {
     <div class="muted" style="font-size:12.5px;margin-top:5px">Needed: <b style="color:var(--text)">+${need}${unit}/day</b> ·
       now: +${rate}${unit}/day · on this pace: ${full(proj)}${unit}</div></div>`;
   const chip = st.on_track ? '<span class="badge b-public">ON TRACK</span>' : '<span class="badge b-held">BEHIND</span>';
-  const mode = st.mode === "watch" ? "Watch time: deeper stories, extra long videos" : "Reach: broad, viral, shareable stories";
+  const mode = st.mode === "watch" ? "Watch time: deeper stories, extra long videos"
+    : g.shorts_views ? "Level 1 push: Shorts reach and subscribers" : "Reach: broad, viral, shareable stories";
   return `<div class="panel"><h2 style="display:flex;justify-content:space-between;align-items:center">Goal by
       ${new Date(g.deadline).toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${st.updated ? chip : ""}</h2>
     ${st.updated ? row("Subscribers", st.subscribers, g.subscribers, st.need_subs_per_day, st.rate_subs_per_day, st.projected_subs, "")
-      + row("Watch hours", st.watch_hours, g.watch_hours, st.need_hours_per_day, st.rate_hours_per_day, st.projected_hours, " h")
+      + (g.shorts_views && st.shorts_views != null
+        ? row("Shorts views (90 days)", st.shorts_views, g.shorts_views, full(st.need_views_per_day), full(st.rate_views_per_day), st.projected_views, "")
+        : row("Watch hours", st.watch_hours, g.watch_hours, st.need_hours_per_day, st.rate_hours_per_day, st.projected_hours, " h"))
       + `<p class="hint">${st.days_left} days left. Today's automatic strategy: <b>${mode}</b>.</p>`
       : '<p class="hint">Progress appears after the next automatic run.</p>'}
   </div>`;
@@ -514,10 +517,11 @@ function renderAuto() {
       <div class="form-row">
         <label>Subscribers<input type="number" id="gSubs" min="1" value="${(S.settings.goals || {}).subscribers || 10000}" style="font:inherit;color:var(--text);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px;min-height:44px;width:100%"></label>
         <label>Watch hours<input type="number" id="gHours" min="1" value="${(S.settings.goals || {}).watch_hours || 2000}" style="font:inherit;color:var(--text);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px;min-height:44px;width:100%"></label>
+        <label>Shorts views (90 days)<input type="number" id="gViews" min="0" value="${(S.settings.goals || {}).shorts_views || 0}" style="font:inherit;color:var(--text);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px;min-height:44px;width:100%"></label>
         <label>By date<input type="date" id="gDate" value="${(S.settings.goals || {}).deadline || ""}" style="font:inherit;color:var(--text);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px;min-height:44px;width:100%"></label>
       </div>
       <div class="actions"><button class="btn" id="gSave">Save goals</button></div>
-      <p class="hint">Every day the automation compares progress with these goals and switches between more reach and more watch time.</p>
+      <p class="hint">Every day the automation compares progress with these goals. With a Shorts views goal (Level 1: 500 subscribers + 3,000,000 Shorts views in 90 days) it stays on Shorts reach.</p>
     </div>
     <div class="panel"><h2>Make videos now</h2>
       <div class="form-row">
@@ -564,7 +568,8 @@ $("#tab-auto").addEventListener("change", async e => {
 $("#tab-auto").addEventListener("click", async e => {
   if (e.target.id === "gSave") {
     const g = { subscribers: Math.max(1, +$("#gSubs").value || 10000), watch_hours: Math.max(1, +$("#gHours").value || 2000),
-                deadline: $("#gDate").value || (S.settings.goals || {}).deadline };
+                deadline: $("#gDate").value || (S.settings.goals || {}).deadline,
+                ...(+$("#gViews").value > 0 ? { shorts_views: +$("#gViews").value } : {}) };
     if (await setSetting("goals", g)) toast("Goals saved. The next run plans around them.");
     return;
   }
