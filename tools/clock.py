@@ -27,9 +27,9 @@ def gh(*args):
 def started_slots():
     r = gh("run", "list", "--workflow", "factory.yml", "--limit", "60", "--json", "displayTitle")
     try:
-        return {x["displayTitle"] for x in json.loads(r.stdout or "[]")}
+        return None if r.returncode else {x["displayTitle"] for x in json.loads(r.stdout)}
     except ValueError:
-        return set()
+        return None  # unknown: skip this minute rather than risk running a slot twice
 
 
 def factory_busy():
@@ -54,9 +54,12 @@ def due(now):
 
 
 def other_clock_running():
+    """True if an OLDER clock run is still live. Newer ones are ignored, so when two runs start together the older
+    one keeps the job and the newer one steps aside - never both."""
     r = gh("run", "list", "--workflow", "clock.yml", "--status", "in_progress", "--json", "databaseId")
+    me = int(os.environ.get("GITHUB_RUN_ID") or 0)
     try:
-        return any(str(x["databaseId"]) != os.environ.get("GITHUB_RUN_ID") for x in json.loads(r.stdout or "[]"))
+        return any(x["databaseId"] < me for x in json.loads(r.stdout or "[]"))
     except ValueError:
         return False
 
@@ -77,11 +80,12 @@ def main():
         # the first), so start one slot at a time and only when no factory run is busy; late slots catch up.
         if pending and not factory_busy():
             done = started_slots()
-            for slot, inputs in pending:
-                sent.add(slot)
+            for slot, inputs in pending if done is not None else []:
                 if f"Factory {slot}" in done:
+                    sent.add(slot)
                     continue
                 if gh("workflow", "run", "factory.yml", "-f", f"slot={slot}", *inputs).returncode == 0:
+                    sent.add(slot)
                     print(now.strftime("%H:%M"), "started", slot, flush=True)
                 break
         if last_publish is None or now - last_publish >= datetime.timedelta(minutes=10):

@@ -153,3 +153,7 @@ create policy "admins change settings" on public.settings for update to authenti
 
 -- Daily lessons the automation writes for itself (shown in the app's Insights tab)
 insert into public.settings (key, value) values ('learned_rules', '{}') on conflict (key) do nothing;
+
+-- When YouTube rejected/removed a video (set once; drives the 14-day safety pause)
+alter table public.insights add column if not exists health_at timestamptz;
+update public.insights set health_at = updated_at where health is not null and health_at is null;

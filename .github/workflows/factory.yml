@@ -121,4 +121,6 @@ jobs:
           EXTRA=""; [ "${IN_UPLOAD:-yes}" = "no" ] && EXTRA="--no-upload"
           echo "args=--lang $G --long $L --shorts $S $EXTRA" >> "$GITHUB_OUTPUT"
       - name: Make and upload
+        env:
+          CLOCK_SLOT: ${{ inputs.slot }}  # set for scheduled slots (goal strategy may turn a Short slot into a long video)
         run: python -u autotube.py ${{ steps.plan.outputs.args }} --publish-pending --stats --cleanup --reply-comments

@@ -239,11 +239,18 @@ def llm_providers():
     return providers
 
 
+_LLM_BENCH = {}  # model -> time until which it is skipped (rate-limited, overloaded, or gone for this run)
+
+
 def llm_json(prompt, required=(), timeout=None):
     """Try each provider/model in order; move to the next on rate limit, timeout, error or bad JSON.
-    Three full rounds with growing pauses: Gemini 503 'overloaded' and per-minute 429 limits clear within minutes."""
+    Three full rounds with growing pauses: Gemini 503 'overloaded' and per-minute 429 limits clear within minutes.
+    Models that just failed with 429/503 sit out 2 minutes, and 401/403/404 ones the whole run, so calls don't
+    waste time on them."""
     for attempt in range(3):
         for call, model in llm_providers():
+            if _LLM_BENCH.get(model, 0) > time.time() and attempt == 0:
+                continue
             try:
                 data = parse_json(call(prompt, model, timeout))
                 missing = [k for k in required if k not in data]
@@ -252,6 +259,11 @@ def llm_json(prompt, required=(), timeout=None):
                 log(f"LLM ok: {call.__name__}/{model}")
                 return data
             except Exception as e:
+                code = getattr(getattr(e, "response", None), "status_code", None)
+                if code in (429, 503):
+                    _LLM_BENCH[model] = time.time() + 120
+                elif code in (401, 403, 404):
+                    _LLM_BENCH[model] = time.time() + 86400
                 log(f"LLM failed {call.__name__}/{model}: {str(e)[:160]} -> switching")
         if attempt < 2:
             wait = (90, 240)[attempt]
@@ -1375,9 +1387,9 @@ def description(meta, short, topic, credits, chapter_list=()):
     head = "\n\n".join(p for p in parts if p)
     if credits:
         block = tx["credits"] + "\n"
-        budget = 4800 - len(head) - len(tail)
+        budget = 4800 - len(head.encode()) - len(tail.encode())  # YouTube counts bytes, not characters
         for c in credits:
-            if len(block) + len(c) + 1 > budget:
+            if len(block.encode()) + len(c.encode()) + 1 > budget:
                 break
             block += c + "\n"
         head += "\n\n" + block.strip()
@@ -1410,7 +1422,11 @@ def upload(path, title, desc, tags, short, privacy=None):
     from googleapiclient.http import MediaFileUpload
 
     # Shorts are detected from the vertical format; #Shorts lives in the description, keeping the title clean.
-    title = re.sub(r"\s*#shorts\b", "", title.strip().strip('"'), flags=re.I)[:100]
+    title = re.sub(r"\s*#shorts\b", "", title.strip().strip('"'), flags=re.I)
+    title = re.sub(r"[<>]", "", title)[:100]  # YouTube rejects < and > in titles and descriptions
+    desc = re.sub(r"[<>]", "", desc)
+    while len(desc.encode()) > 4990:
+        desc = desc[:-200]
     body = {
         "snippet": {"title": title, "description": desc, "tags": tags,
                     "categoryId": os.environ.get("YT_CATEGORY", "28"), "defaultLanguage": LANG,
@@ -1518,9 +1534,9 @@ def reply_comments(limit=3, force=False):
                     or top.get("authorChannelId", {}).get("value") == me):
                 continue
             cands.append({"id": t["id"], "video": v["title"], "lang": v["lang"], "text": top["textDisplay"][:400]})
+    sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates",
+            json={"key": "comment_replies", "value": {**state, "checked": now.isoformat()}})
     if not cands:
-        sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates",
-                json={"key": "comment_replies", "value": {**state, "checked": now.isoformat()}})
         return
     cands = cands[:15]
     res = llm_json(f"""You run the YouTube channel {CHANNEL()} (tech & AI news) and you are answering comments yourself.
@@ -1649,19 +1665,24 @@ def record(work, kind, meta, desc, duration, vid, thumb):
     if not sb_on():
         return
     prefix = f"{datetime.datetime.now(datetime.timezone.utc):%Y%m%d}/{work.parent.name}_{work.name}"
-    preview = sb_upload(make_preview(work, kind), f"{prefix}/preview.mp4", "video/mp4")
-    thumb_path = sb_upload(thumb, f"{prefix}/thumb.jpg", "image/jpeg") if thumb else None
-    sb_rest("POST", "videos", json={
+    row = sb_rest("POST", "videos", json={
         "kind": kind, "lang": LANG, "topic": meta["topic"], "title": meta["title"], "description": desc,
         "tags": meta.get("tags", [])[:15], "youtube_id": vid,
         "privacy": privacy_for(meta) if vid else None,
         "status": "published" if vid and privacy_for(meta) == "public" else ("uploaded" if vid else "rendered"),
-        "preview_path": preview, "thumb_path": thumb_path, "duration_s": round(duration, 1),
+        "duration_s": round(duration, 1),
         "meta": {**{k: meta.get(k) for k in ("pinned_comment", "keywords", "thumbnail_text", "fact_check", "host")},
                  "hold": bool(meta.get("hold"))}})
     if vid:
         sb_rest("POST", "insights", prefer="return=representation,resolution=merge-duplicates", json={"youtube_id": vid, "lang": LANG, "kind": kind, "topic": meta["topic"], "title": meta["title"],
                       "variant": meta.get("variant") or ("weekly" if meta.get("weekly") else None)})
+    try:  # app preview files are a convenience: a failure here must not lose the record above
+        paths = {"preview_path": sb_upload(make_preview(work, kind), f"{prefix}/preview.mp4", "video/mp4")}
+        if thumb:
+            paths["thumb_path"] = sb_upload(thumb, f"{prefix}/thumb.jpg", "image/jpeg")
+        sb_rest("PATCH", f"videos?id=eq.{row[0]['id']}", json=paths)
+    except Exception as e:
+        log(f"[{kind}] app preview skipped: {str(e)[:120]}")
     log(f"[{kind}] saved to Supabase")
 
 
@@ -1669,26 +1690,36 @@ def publish_pending():
     global LANG
     rows = sb_rest("GET", "videos?select=id,youtube_id,title,meta,lang&publish_requested=is.true&status=neq.published"
                           "&youtube_id=not.is.null")
-    for row in rows:
-        LANG = row.get("lang") or "en"  # pick that language's channel login
-        try:
-            youtube_client().videos().update(part="status", body={"id": row["youtube_id"], "status": {
-                "privacyStatus": "public", "selfDeclaredMadeForKids": False, "containsSyntheticMedia": True}}).execute()
-            sb_rest("PATCH", f"videos?id=eq.{row['id']}", json={
-                "status": "published", "privacy": "public",
-                "published_at": datetime.datetime.now(datetime.timezone.utc).isoformat()})
-            log(f"published https://youtu.be/{row['youtube_id']} | {row['title']}")
-            after_upload(row["youtube_id"], comment=(row.get("meta") or {}).get("pinned_comment"))
-        except Exception as e:
-            log(f"publish failed {row['youtube_id']}: {str(e)[:200]}")
+    current = LANG
+    try:
+        for row in rows:
+            LANG = row.get("lang") or "en"  # pick that language's channel login
+            publish_one(row)
+    finally:
+        LANG = current  # never change the language of the run that called this
     if not rows:
         log("nothing to publish")
+
+
+def publish_one(row):
+    try:
+        youtube_client().videos().update(part="status", body={"id": row["youtube_id"], "status": {
+            "privacyStatus": "public", "selfDeclaredMadeForKids": False, "containsSyntheticMedia": True}}).execute()
+        sb_rest("PATCH", f"videos?id=eq.{row['id']}", json={
+            "status": "published", "privacy": "public",
+            "published_at": datetime.datetime.now(datetime.timezone.utc).isoformat()})
+        log(f"published https://youtu.be/{row['youtube_id']} | {row['title']}")
+        after_upload(row["youtube_id"], comment=(row.get("meta") or {}).get("pinned_comment"))
+    except Exception as e:
+        log(f"publish failed {row['youtube_id']}: {str(e)[:200]}")
+        if getattr(getattr(e, "resp", None), "status", 0) in (400, 403, 404):  # gone/refused: stop retrying
+            sb_rest("PATCH", f"videos?id=eq.{row['id']}", json={"status": "failed", "publish_requested": False})
 
 
 def update_stats(full=True):
     """Refresh views/likes/comments for the last ~6 months (insights) and the app's 7-day list (videos).
     One channel for all languages, so one batched API call per 50 videos (1 quota unit each)."""
-    since = days_ago(180)
+    since = days_ago(180 if full else 7)
     ids = {r["youtube_id"] for r in sb_rest("GET", f"insights?select=youtube_id&created_at=gte.{since}")}
     ids |= {r["youtube_id"] for r in sb_rest("GET", "videos?select=youtube_id&youtube_id=not.is.null")}
     ids = sorted(ids)
@@ -1698,13 +1729,13 @@ def update_stats(full=True):
         resp = youtube_client().videos().list(part="statistics,status", id=",".join(batch)).execute()
         found = {v["id"] for v in resp.get("items", [])}
         for gone in set(batch) - found:  # removed by YouTube (or deleted by hand)
-            sb_rest("PATCH", f"insights?youtube_id=eq.{gone}", json={"health": "missing", "updated_at": now})
+            sb_rest("PATCH", f"insights?youtube_id=eq.{gone}&health=is.null", json={"health": "missing", "health_at": now})
         for v in resp.get("items", []):
             st = v["status"]
             if st.get("uploadStatus") in ("rejected", "failed", "deleted") or st.get("rejectionReason"):
-                sb_rest("PATCH", f"insights?youtube_id=eq.{v['id']}", json={
+                sb_rest("PATCH", f"insights?youtube_id=eq.{v['id']}&health=is.null", json={
                     "health": f"{st.get('uploadStatus')}:{st.get('rejectionReason') or st.get('failureReason') or ''}",
-                    "updated_at": now})
+                    "health_at": now})
             s = v.get("statistics", {})
             st = {k: int(s.get(k, 0)) for k in ("viewCount", "likeCount", "commentCount")}
             sb_rest("PATCH", f"videos?youtube_id=eq.{v['id']}", json={"privacy": v["status"]["privacyStatus"], "stats": st})
@@ -1769,6 +1800,17 @@ def save_channel_stats():
     log(f"channel: {s.get('subscriberCount')} subscribers, {s.get('viewCount')} views, {s.get('videoCount')} videos")
 
 
+def factory_busy(token, repo):
+    if not (token and repo):
+        return False
+    for status in ("in_progress", "queued"):
+        r = requests.get(f"https://api.github.com/repos/{repo}/actions/workflows/factory.yml/runs?status={status}",
+                         headers={"Authorization": f"Bearer {token}"}, timeout=30)
+        if r.status_code != 200 or r.json().get("total_count"):
+            return True
+    return False
+
+
 def process_requests():
     """'Run now' taps in the app become factory runs. Runs inside GitHub Actions with its own short-lived token;
     capped so the daily YouTube upload limit (about 6) is never exceeded."""
@@ -1779,7 +1821,10 @@ def process_requests():
     token, repo = os.environ.get("GITHUB_TOKEN"), os.environ.get("GITHUB_REPOSITORY")
     today = str(datetime.datetime.now(datetime.timezone.utc).date())
     uploads = len(sb_rest("GET", f"videos?select=id&youtube_id=not.is.null&created_at=gte.{today}T00:00:00Z"))
-    for req in pending:
+    if factory_busy(token, repo):
+        log("run requests: a factory run is busy, starting the next request later")
+        return
+    for req in pending[:1]:  # GitHub keeps one waiting run per group: a second dispatch would cancel the first
         want = req["long"] + req["shorts"]
         if want == 0:
             status = "skipped: nothing requested"
@@ -1788,6 +1833,7 @@ def process_requests():
         elif uploads + want > 11:  # two Google projects: ~5-6 uploads each per day
             status = f"skipped: daily upload limit ({uploads} today)"
         else:
+            sb_rest("PATCH", f"run_requests?id=eq.{req['id']}", json={"status": "starting"})
             r = requests.post(f"https://api.github.com/repos/{repo}/actions/workflows/factory.yml/dispatches",
                               headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
                               json={"ref": "main", "inputs": {"lang": req["lang"], "long": str(req["long"]),
@@ -1925,7 +1971,9 @@ def channel_health():
     """Any video YouTube rejected or removed in the last 14 days = pause auto-publishing (upload as private)
     until it clears, so one problem cannot snowball into strikes."""
     global SAFETY_PAUSE
-    bad = sb_rest("GET", f"insights?select=youtube_id,title,health&health=not.is.null&updated_at=gte.{days_ago(14)}")
+    # 'missing' = deleted (usually by hand) - not a strike signal; rejections count for 14 days from when they happened
+    bad = sb_rest("GET", f"insights?select=youtube_id,title,health&health=not.is.null&health=neq.missing"
+                         f"&health_at=gte.{days_ago(14)}")
     SAFETY_PAUSE = bool(bad) and os.environ.get("SAFETY_PAUSE_OFF") != "1"
     if bad:
         log(f"SAFETY: {len(bad)} video(s) rejected/removed recently -> new uploads stay private: "
@@ -2043,7 +2091,7 @@ def slugify(s):
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:40] or "video"
 
 
-UPLOAD_CAP = 6  # per Google project per rolling day (10,000 quota units / 1,600 per upload, minus room for extras)
+UPLOAD_CAP = 5  # per Google project per rolling day (10,000 quota units / 1,600 per upload, minus room for extras)
 
 
 def uploads_24h(lang):
@@ -2197,7 +2245,7 @@ def main():
     ap.add_argument("--project", type=int, choices=(1, 2), default=1, help="with --auth: which Google Cloud project to log in")
     args = ap.parse_args()
     load_env()
-    global LANG, PROJECT
+    global LANG, PROJECT, SAFETY_PAUSE
     LANG = args.lang
     if args.auth:
         PROJECT = args.project
@@ -2207,15 +2255,21 @@ def main():
     if args.upload_dir:
         upload_existing(args.upload_dir)
         return
-    maintenance = [f for flag, f in ((args.publish_pending, publish_pending), (args.stats, update_stats),
+    maintenance = [f for flag, f in ((args.process_requests, process_requests),
+                                     (args.publish_pending, publish_pending), (args.stats, update_stats),
                                      (args.quick_stats and not args.stats, lambda: update_stats(full=False)),
-                                     (args.cleanup, cleanup), (args.reply_comments, reply_comments),
-                                     (args.process_requests, process_requests)) if flag]
+                                     (args.cleanup, cleanup), (args.reply_comments, reply_comments)) if flag]
     for f in maintenance:
         try:  # maintenance must never block making today's videos
             f()
         except Exception as e:
             log(f"{f.__name__} failed: {str(e)[:200]}")
+    if (args.breaking or args.long or args.shorts) and not args.no_upload:
+        try:
+            channel_health()
+        except Exception as e:  # unknown health = upload as private, never risk a strike
+            SAFETY_PAUSE = True
+            log(f"SAFETY: health check failed ({str(e)[:120]}) -> uploads stay private this run")
     if args.breaking:
         if get_setting("paused", False) is not True:
             run_breaking(args)
@@ -2228,7 +2282,7 @@ def main():
         log("PAUSED from the app (Controls > Pause automation): no new videos this run")
         return
     goal = get_setting("goal_status", {}) or {}
-    if os.environ.get("GITHUB_EVENT_NAME") == "schedule" and goal.get("mode") == "watch" and (args.long, args.shorts) == (0, 1):
+    if os.environ.get("CLOCK_SLOT") and goal.get("mode") == "watch" and (args.long, args.shorts) == (0, 1):
         args.long, args.shorts = 1, 0  # watch hours behind target: the single-Short slot becomes a long video
         log("goal strategy 'watch': this run makes a long video instead of a Short")
 
