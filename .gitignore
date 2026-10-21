@@ -17,3 +17,7 @@ __pycache__/
 
 # Generated at deploy from repo variables
 app/config.js
+
+# Animation renderer deps
+motion/node_modules/
+token*.json

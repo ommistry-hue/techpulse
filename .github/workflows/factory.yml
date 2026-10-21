@@ -1,10 +1,10 @@
-name: Factory (make + upload videos)
+﻿name: Factory (make + upload videos)
 
 on:
   schedule:
-    - cron: "30 12 * * *"   # 1 long + 1 Short
-    - cron: "0 17 * * *"    # 2 Shorts
-    - cron: "0 22 * * *"    # 1 Short
+    - cron: "17 12 * * *"   # 1 long + 1 Short
+    - cron: "43 16 * * *"    # 2 Shorts
+    - cron: "23 21 * * *"    # 1 Short
   workflow_dispatch:
     inputs:
       long:
@@ -24,7 +24,7 @@ permissions:
 jobs:
   make:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 170
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -50,6 +50,16 @@ jobs:
           cache: pip
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
       - run: pip install -q -r requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: motion/package-lock.json
+      - name: Install animation renderer (Remotion)
+        working-directory: motion
+        run: |
+          npm ci --no-audit --no-fund
+          npx remotion browser ensure
       - name: Decide how many videos
         id: plan
         env:
@@ -58,9 +68,9 @@ jobs:
           IN_SHORTS: ${{ inputs.shorts }}
         run: |
           case "$SCHEDULE" in
-            "30 12 * * *") L=1; S=1 ;;
-            "0 17 * * *")  L=0; S=2 ;;
-            "0 22 * * *")  L=0; S=1 ;;
+            "17 12 * * *") L=1; S=1 ;;
+            "43 16 * * *")  L=0; S=2 ;;
+            "23 21 * * *")  L=0; S=1 ;;
             *) L="${IN_LONG:-1}"; S="${IN_SHORTS:-1}" ;;
           esac
           [[ "$L" =~ ^[01]$ && "$S" =~ ^[0-4]$ ]] || { echo "bad input"; exit 1; }

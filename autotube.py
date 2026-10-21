@@ -12,6 +12,7 @@ import subprocess
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from urllib.parse import urlparse
 
 import edge_tts
 import requests
@@ -138,7 +139,8 @@ LLM_TIMEOUT = 200
 
 def parse_json(text):
     text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
-    return json.loads(text[text.find("{"):text.rfind("}") + 1])
+    # raw_decode stops at the end of the first JSON object, so trailing text/objects are ignored.
+    return json.JSONDecoder().raw_decode(text[text.find("{"):])[0]
 
 
 def gemini(prompt, model):
@@ -168,28 +170,53 @@ def openrouter(prompt, model):
     return data["choices"][0]["message"]["content"]
 
 
+_FREE_MODELS = None
+
+
+def openrouter_free_models():
+    """Free OpenRouter models change often (removed/blocked), so read the live list once per run."""
+    global _FREE_MODELS
+    if _FREE_MODELS is None:
+        try:
+            data = requests.get("https://openrouter.ai/api/v1/models", timeout=30).json()["data"]
+            skip = ("safety", "guard", "code", "embed", "vision", "audio", "omni")
+            free = [m for m in data if m["id"].endswith(":free") and (m.get("context_length") or 0) >= 32000
+                    and not any(s in m["id"] for s in skip)]
+            _FREE_MODELS = [m["id"] for m in sorted(free, key=lambda m: -(m.get("context_length") or 0))][:8]
+        except Exception as e:
+            log(f"OpenRouter model list failed: {e}")
+            _FREE_MODELS = []
+    return _FREE_MODELS
+
+
 def llm_providers():
     split = lambda v: [m.strip() for m in os.environ.get(v, "").split(",") if m.strip()]
     providers = []
     if os.environ.get("GEMINI_API_KEY"):
         providers += [(gemini, m) for m in split("GEMINI_MODELS") or ["gemini-flash-latest"]]
     if os.environ.get("OPENROUTER_API_KEY"):
-        providers += [(openrouter, m) for m in split("OPENROUTER_MODELS")]
+        preferred = split("OPENROUTER_MODELS")
+        providers += [(openrouter, m) for m in preferred + [m for m in openrouter_free_models() if m not in preferred]]
     return providers
 
 
 def llm_json(prompt, required=()):
-    """Try each provider/model in order; move to the next on rate limit, timeout, error or bad JSON."""
-    for call, model in llm_providers():
-        try:
-            data = parse_json(call(prompt, model))
-            missing = [k for k in required if k not in data]
-            if missing:
-                raise ValueError(f"missing keys {missing}")
-            log(f"LLM ok: {call.__name__}/{model}")
-            return data
-        except Exception as e:
-            log(f"LLM failed {call.__name__}/{model}: {str(e)[:200]} -> switching")
+    """Try each provider/model in order; move to the next on rate limit, timeout, error or bad JSON.
+    Two full rounds with a pause, because Gemini 503 'overloaded' errors usually clear within a minute."""
+    for attempt in range(2):
+        for call, model in llm_providers():
+            try:
+                data = parse_json(call(prompt, model))
+                missing = [k for k in required if k not in data]
+                if missing:
+                    raise ValueError(f"missing keys {missing}")
+                log(f"LLM ok: {call.__name__}/{model}")
+                return data
+            except Exception as e:
+                log(f"LLM failed {call.__name__}/{model}: {str(e)[:160]} -> switching")
+        if attempt == 0:
+            log("All LLM providers failed, waiting 90s and retrying")
+            time.sleep(90)
     raise RuntimeError("All LLM providers failed")
 
 
@@ -459,7 +486,9 @@ def fetch_clips(keywords, folder, fmt, need):
                 if v["id"] in used:
                     continue
                 if "image" in v:
-                    link, path = v["image"], folder / f"clip{len(clips):02d}.img"
+                    ext = Path(urlparse(v["image"]).path).suffix.lower()
+                    ext = ext if ext in (".jpg", ".jpeg", ".png", ".webp") else ".jpg"  # browser renderer needs a real type
+                    link, path = v["image"], folder / f"clip{len(clips):02d}{ext}"
                 else:
                     f = best_file(v, fmt)
                     if not f:
@@ -536,12 +565,37 @@ def make_thumbnail(work, text, at, image=None):
               f"[bg][fg]overlay=(W-w)/2:(H-h)/2,{look}")
         ff(["-i", image.name, "-frames:v", "1", "-filter_complex", fc, "-q:v", "3", "thumb.jpg"], work)
     else:
-        ff(["-ss", f"{at:.2f}", "-i", "bg.mp4", "-frames:v", "1", "-vf", f"scale=1280:720,{look}",
+        src = "bg.mp4" if (work / "bg.mp4").exists() else "final.mp4"  # animated style has no bg.mp4
+        ff(["-ss", f"{at:.2f}", "-i", src, "-frames:v", "1", "-vf", f"scale=1280:720,{look}",
             "-q:v", "3", "thumb.jpg"], work)
     return work / "thumb.jpg"
 
 
-def make_video(work, kind, script, keywords):
+def render_motion(work, kind, words, duration, clips, title, sections):
+    """Animated style (Remotion): mascot, kinetic captions, headline cards. Assets served from the work folder."""
+    fmt = FORMATS[kind]
+    fps, total = 30, duration + 0.8
+    images = [c for c in clips if c["is_image"]]
+    scenes = []
+    if images:
+        n = max(len(images), round(total / fmt["clip_secs"]))
+        seg = total / n
+        scenes = [{"start": round(i * seg, 3), "end": round((i + 1) * seg, 3), "src": images[i % len(images)]["path"].name}
+                  for i in range(n)]
+    shutil.copy(ROOT / "fonts" / "Anton-Regular.ttf", work / "Anton-Regular.ttf")
+    props = {"kind": kind, "width": fmt["w"], "height": fmt["h"], "fps": fps, "durationInFrames": round(total * fps),
+             "audio": "voice.mp3", "words": [[round(a, 3), round(b, 3), w] for a, b, w in words], "scenes": scenes,
+             "sections": [{"start": round(t, 2), "heading": h} for t, h in sections], "title": title,
+             "channel": os.environ.get("CHANNEL_NAME", "TechPulse").upper()}
+    (work / "props.json").write_text(json.dumps(props, ensure_ascii=False), encoding="utf-8")
+    npx = shutil.which("npx") or "npx"
+    subprocess.run([npx, "remotion", "render", "src/index.jsx", "Long" if kind == "long" else "Short",
+                    str(work / "final.mp4"), f"--props={work / 'props.json'}", f"--public-dir={work}",
+                    "--log=error", "--crf=20"], cwd=ROOT / "motion", check=True)
+    return work / "final.mp4"
+
+
+def make_video(work, kind, script, keywords, title="", sections=()):
     fmt = FORMATS[kind]
     work.mkdir(parents=True, exist_ok=True)
     log(f"[{kind}] voice")
@@ -552,7 +606,14 @@ def make_video(work, kind, script, keywords):
     clips = fetch_clips(keywords, work, fmt, need=min(30, round(duration / fmt["clip_secs"])))
     log(f"[{kind}] {len(clips)} clips ({sum(c['is_image'] for c in clips)} photos), rendering")
     credits = [c["credit"] for c in clips if c["credit"]]
-    video = build_video(work, clips, duration, fmt)
+    video = None
+    if os.environ.get("RENDER_STYLE", "motion") == "motion":
+        try:
+            video = render_motion(work, kind, words, duration, clips, title, chapters(sections, words) if sections else [])
+        except Exception as e:  # never lose a day's video: fall back to the classic slideshow
+            log(f"[{kind}] animated render failed ({str(e)[:150]}), using classic style")
+    if video is None:
+        video = build_video(work, clips, duration, fmt)
     first_photo = next((c["path"] for c in clips if c["is_image"]), None)
     return {"video": video, "words": words, "duration": duration, "credits": credits, "first_photo": first_photo}
 
@@ -623,10 +684,18 @@ def upload(path, title, desc, tags, short):
     }
     req = youtube_client().videos().insert(
         part="snippet,status", body=body,
-        media_body=MediaFileUpload(str(path), mimetype="video/mp4", chunksize=-1, resumable=True))
+        media_body=MediaFileUpload(str(path), mimetype="video/mp4", chunksize=8 * 1024 * 1024, resumable=True))
     resp = None
+    tries = 0
     while resp is None:
-        _, resp = req.next_chunk()
+        try:
+            _, resp = req.next_chunk()  # resumable: a retry continues where the dropped chunk stopped
+        except Exception as e:
+            tries += 1
+            if tries > 5:
+                raise
+            log(f"  upload interrupted ({str(e)[:80]}), retry {tries}/5")
+            time.sleep(10 * tries)
     return resp["id"]
 
 
@@ -845,7 +914,8 @@ def main():
             work.mkdir(parents=True, exist_ok=True)
             (work / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
             log(f"=== {kind}: {meta['topic']} | {meta['title']}")
-            r = make_video(work, kind, meta["script"], meta.get("keywords", []))
+            r = make_video(work, kind, meta["script"], meta.get("keywords", []), meta["title"],
+                           meta.get("sections", []))
             chap = chapters(meta["sections"], r["words"]) if kind == "long" else []
             desc = description(meta, kind == "short", meta["topic"], r["credits"], chap)
             (work / "description.txt").write_text(desc, encoding="utf-8")
