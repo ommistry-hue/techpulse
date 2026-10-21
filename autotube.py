@@ -241,8 +241,8 @@ def llm_providers():
 
 def llm_json(prompt, required=(), timeout=None):
     """Try each provider/model in order; move to the next on rate limit, timeout, error or bad JSON.
-    Two full rounds with a pause, because Gemini 503 'overloaded' errors usually clear within a minute."""
-    for attempt in range(2):
+    Three full rounds with growing pauses: Gemini 503 'overloaded' and per-minute 429 limits clear within minutes."""
+    for attempt in range(3):
         for call, model in llm_providers():
             try:
                 data = parse_json(call(prompt, model, timeout))
@@ -253,9 +253,10 @@ def llm_json(prompt, required=(), timeout=None):
                 return data
             except Exception as e:
                 log(f"LLM failed {call.__name__}/{model}: {str(e)[:160]} -> switching")
-        if attempt == 0:
-            log("All LLM providers failed, waiting 90s and retrying")
-            time.sleep(90)
+        if attempt < 2:
+            wait = (90, 240)[attempt]
+            log(f"All LLM providers failed, waiting {wait}s and retrying")
+            time.sleep(wait)
     raise RuntimeError("All LLM providers failed")
 
 
@@ -1482,12 +1483,26 @@ def add_to_playlist(vid):
         log(f"  playlist skipped: {str(e)[:120]}")
 
 
-def reply_comments(limit=5):
-    """Reply to genuine viewer comments on recent videos (engagement signal). Max `limit` replies per run
-    (50 quota units each). Spam, toxic or already-answered comments are skipped."""
+REPLY_DAILY_CAP = 15     # natural volume, and keeps YouTube quota for uploads (50 units per reply)
+REPLY_SHARE = 0.65       # reply to a random ~2 of 3 valid comments (questions always get an answer)
+REPLY_MIN_AGE_MIN = 25   # wait a while like a person would, never reply within seconds
+
+
+def reply_comments(limit=3, force=False):
+    """Reply like a person who runs the channel: only genuine comments, a random share of them, after a natural
+    delay, a few per run, capped per day. Every comment is decided once (replied or skipped) and remembered."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if not force and now.minute >= 10:
+        return  # publish checks run every 10 min: look at comments about once an hour
+    state = get_setting("comment_replies", {}) or {}
+    today = str(datetime.date.today())
+    sent_today = state.get("count", 0) if state.get("date") == today else 0
+    decided = state.get("decided", [])
+    if sent_today >= REPLY_DAILY_CAP:
+        return
     yt = youtube_client()
     me = yt.channels().list(part="id", mine=True).execute()["items"][0]["id"]
-    recent = sb_rest("GET", f"insights?select=youtube_id,title,lang&created_at=gte.{days_ago(14)}&order=views.desc&limit=12")
+    recent = sb_rest("GET", f"insights?select=youtube_id,title,lang&created_at=gte.{days_ago(10)}&order=views.desc&limit=8")
     cands = []
     for v in recent:
         try:
@@ -1497,34 +1512,54 @@ def reply_comments(limit=5):
             continue  # private video or comments off
         for t in threads:
             top = t["snippet"]["topLevelComment"]["snippet"]
-            if t["snippet"].get("totalReplyCount", 0) or top.get("authorChannelId", {}).get("value") == me:
+            age_min = (now - datetime.datetime.fromisoformat(top["publishedAt"].replace("Z", "+00:00"))).total_seconds() / 60
+            if (t["id"] in decided or t["snippet"].get("totalReplyCount", 0) or age_min < REPLY_MIN_AGE_MIN
+                    or top.get("authorChannelId", {}).get("value") == me):
                 continue
             cands.append({"id": t["id"], "video": v["title"], "lang": v["lang"], "text": top["textDisplay"][:400]})
     if not cands:
-        log("comments: nothing new to reply to")
         return
-    cands = cands[:20]
-    res = llm_json(f"""You manage replies for {CHANNEL()}, a friendly tech & AI news YouTube channel.
-For each viewer comment decide whether to reply. SKIP spam, self-promotion, links, hate, insults, or comments that need
-no answer. Otherwise write a short warm reply (max 200 characters) in the SAME language as the comment
-(Hindi comment -> Hindi/Hinglish reply). Answer only from the video topic; never invent facts or promises; no links;
-sometimes end with a short question to keep the conversation going. Thank people who praise the video.
+    cands = cands[:15]
+    res = llm_json(f"""You run the YouTube channel {CHANNEL()} (tech & AI news) and you are answering comments yourself.
+For each comment decide:
+- "valid": false for spam, self-promotion, links, bots, hate, insults, gibberish, or anything off-topic or needing no answer.
+  Also false if the person asks whether replies are automated or written by AI (never claim to be human).
+- "question": true if the commenter asks something.
+- "reply": for valid comments, a reply that reads like a real person typing on a phone:
+  short (usually 4-20 words), casual, specific to what THEY said, in the SAME language and script as the comment
+  (Hinglish comment -> Hinglish reply). Vary the style between replies: sometimes lowercase, sometimes no punctuation
+  at the end, at most one emoji and only sometimes. Never start with "Great question", "Thanks for your comment",
+  "Absolutely" or similar stock phrases; no hashtags, no links, no "subscribe" requests, no corporate tone.
+  Only facts from the video topic; if unsure, say so honestly or ask their opinion. Never promise anything.
 
 COMMENTS:
 {json.dumps(cands, ensure_ascii=False, indent=1)}
 
-Return JSON only: {{"replies": [{{"id": "comment thread id", "reply": "text or SKIP"}}]}}""", required=("replies",))
-    sent = 0
+Return JSON only: {{"replies": [{{"id": "comment thread id", "valid": true, "question": false, "reply": "text"}}]}}""",
+                   required=("replies",))
+    picks = []
     for r in res.get("replies", []):
-        if sent >= limit or not r.get("reply") or r["reply"].strip().upper() == "SKIP":
+        if r.get("id") not in {c["id"] for c in cands}:
             continue
+        decided.append(r["id"])
+        text = (r.get("reply") or "").strip()
+        if r.get("valid") and text and (r.get("question") or random.random() < REPLY_SHARE):
+            picks.append((r["id"], text[:300]))
+    random.shuffle(picks)
+    sent = 0
+    for cid, text in picks[:min(limit, REPLY_DAILY_CAP - sent_today)]:
         try:
-            yt.comments().insert(part="snippet", body={"snippet": {"parentId": r["id"],
-                                                                   "textOriginal": r["reply"].strip()[:300]}}).execute()
+            if sent:
+                time.sleep(random.uniform(20, 90))  # not a burst of replies in the same second
+            yt.comments().insert(part="snippet", body={"snippet": {"parentId": cid, "textOriginal": text}}).execute()
             sent += 1
         except Exception as e:
             log(f"  reply failed: {str(e)[:100]}")
-    log(f"comments: replied to {sent} of {len(cands)} new comments")
+    # Valid comments not picked this time stay decided (skipped), so the pick stays random instead of eventually all.
+    value = {"date": today, "count": sent_today + sent, "decided": decided[-500:]}
+    sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates",
+            json={"key": "comment_replies", "value": value})
+    log(f"comments: {len(cands)} new, {len(picks)} picked, {sent} replied ({sent_today + sent}/{REPLY_DAILY_CAP} today)")
 
 
 def upload_existing(work):
@@ -2152,7 +2187,7 @@ def main():
     ap.add_argument("--stats", action="store_true", help="refresh YouTube stats in Supabase")
     ap.add_argument("--quick-stats", action="store_true", help="refresh view counts only (cheap, for frequent runs)")
     ap.add_argument("--cleanup", action="store_true", help=f"delete Supabase records/files older than {KEEP_DAYS} days")
-    ap.add_argument("--reply-comments", action="store_true", help="reply to new viewer comments (max 5 per run)")
+    ap.add_argument("--reply-comments", action="store_true", help="reply to a random share of new valid viewer comments (hourly, capped per day)")
     ap.add_argument("--process-requests", action="store_true", help="start runs requested from the app")
     ap.add_argument("--weekly", action="store_true", help="make the long video the weekly Top 10 (default: Sundays)")
     ap.add_argument("--breaking", action="store_true", help="check for big breaking news; make a Short if found")
