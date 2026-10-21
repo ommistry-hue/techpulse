@@ -30,3 +30,6 @@ voice_samples/
 
 # Downloaded at run time in the cloud (cached)
 assets/music/
+
+# Private planning notes (local only)
+PLAN.md

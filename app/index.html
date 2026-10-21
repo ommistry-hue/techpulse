@@ -4,30 +4,37 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>TechPulse Studio</title>
-<meta name="description" content="Review, publish and track TechPulse videos">
+<meta name="description" content="Run, watch and grow the TechPulse YouTube channel">
 <meta name="theme-color" content="#070d1a">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<script>
+  // Apply the saved theme before first paint (no flash). Storage can be blocked: fall back to system.
+  try { const t = localStorage.getItem("tp-theme"); if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; } catch (_) {}
+</script>
 <style>
   :root {
     --bg: #070d1a; --surface: #131c2e; --surface-2: #1b2640; --line: #26324d;
     --text: #e8edf7; --muted: #8d9ab5; --accent: #2be4ff; --accent-ink: #04121c;
     --ok: #3ddc97; --warn: #ffb020; --danger: #ff6b6b; --link: #7cb7ff;
+    --chart: #109cbb; --grid: #26324d;
   }
   @media (prefers-color-scheme: light) {
     :root:not([data-theme="dark"]) {
       --bg: #f4f6fb; --surface: #ffffff; --surface-2: #eef1f8; --line: #dde3ef;
       --text: #121826; --muted: #5d6880; --accent: #0e9fbf; --accent-ink: #ffffff;
       --ok: #108a57; --warn: #b26b00; --danger: #c53030; --link: #1a5fd6;
+      --chart: #0e8fad; --grid: #e3e8f2;
     }
   }
-  :root[data-theme="dark"] {
-    --bg: #070d1a; --surface: #131c2e; --surface-2: #1b2640; --line: #26324d;
-    --text: #e8edf7; --muted: #8d9ab5; --accent: #2be4ff; --accent-ink: #04121c;
-    --ok: #3ddc97; --warn: #ffb020; --danger: #ff6b6b; --link: #7cb7ff;
+  :root[data-theme="light"] {
+    --bg: #f4f6fb; --surface: #ffffff; --surface-2: #eef1f8; --line: #dde3ef;
+    --text: #121826; --muted: #5d6880; --accent: #0e9fbf; --accent-ink: #ffffff;
+    --ok: #108a57; --warn: #b26b00; --danger: #c53030; --link: #1a5fd6;
+    --chart: #0e8fad; --grid: #e3e8f2;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; background: var(--bg); color: var(--text);
@@ -38,10 +45,13 @@
     display: flex; align-items: center; gap: 10px; }
   .logo { width: 32px; height: 32px; border-radius: 8px; flex: none; display: block; }
   h1 { font-size: 17px; margin: 0; flex: 1; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
   .icon-btn { border: 1px solid var(--line); background: var(--surface-2); color: var(--text); border-radius: 10px;
     min-height: 40px; padding: 0 12px; font: inherit; font-weight: 600; cursor: pointer; }
-  main { padding: 14px 16px; max-width: 720px; margin: 0 auto; }
-  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; margin-bottom: 12px; overflow: hidden; }
+  main { padding: 14px 16px; max-width: 760px; margin: 0 auto; }
+  .panel, .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; margin-bottom: 12px; }
+  .panel { padding: 14px; }
+  .card { overflow: hidden; }
   .row { display: flex; gap: 12px; padding: 12px; align-items: flex-start; cursor: pointer; }
   .thumb { flex: none; width: 104px; aspect-ratio: 16/9; border-radius: 8px; background: var(--surface-2) center/cover;
     display: grid; place-items: center; color: var(--muted); font-size: 18px; }
@@ -50,8 +60,8 @@
   .title { font-weight: 650; margin: 0 0 6px; overflow-wrap: anywhere; }
   .sub { color: var(--muted); font-size: 12.5px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .badge { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 6px; background: var(--surface-2); }
-  .b-long { color: var(--link); } .b-short { color: var(--danger); }
-  .b-lang { color: var(--accent); } .b-public { color: var(--ok); } .b-private { color: var(--muted); } .b-pending { color: var(--warn); }
+  .b-long { color: var(--link); } .b-short { color: var(--danger); } .b-lang { color: var(--accent); }
+  .b-public { color: var(--ok); } .b-private { color: var(--muted); } .b-pending, .b-held { color: var(--warn); }
   .detail { border-top: 1px solid var(--line); padding: 12px; display: none; }
   .open .detail { display: block; }
   video { width: 100%; max-height: 70vh; background: #000; border-radius: 10px; display: block; }
@@ -66,22 +76,62 @@
   .btn:disabled { opacity: .5; cursor: default; }
   nav { position: fixed; bottom: 0; left: 0; right: 0; background: var(--surface); border-top: 1px solid var(--line);
     display: flex; padding-bottom: env(safe-area-inset-bottom); z-index: 5; }
-  nav button { flex: 1; border: 0; background: none; color: var(--muted); min-height: 60px; font: inherit; font-weight: 600; cursor: pointer; }
+  nav button { flex: 1; border: 0; background: none; color: var(--muted); min-height: 60px; font: inherit; font-size: 13px;
+    font-weight: 600; cursor: pointer; padding: 0 2px; }
   nav button.on { color: var(--accent); }
-  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
-  .panel h2 { font-size: 15px; margin: 0 0 10px; }
-  .tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
-  .tile { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
-  .tile b { display: block; font-size: 24px; font-variant-numeric: tabular-nums; }
-  .tile span { color: var(--muted); font-size: 12.5px; }
-  .list-row { display: flex; justify-content: space-between; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
-  .list-row:last-child { border-bottom: 0; }
-  .list-row .t { min-width: 0; overflow-wrap: anywhere; }
-  .list-row .n { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  input[type=email], input[type=password] { font: inherit; color: var(--text); background: var(--surface-2);
-    border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-height: 44px; width: 100%; }
+  .tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+  .tile { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px; min-width: 0; }
+  .tile b { display: block; font-size: 24px; font-variant-numeric: tabular-nums; line-height: 1.2; }
+  .tile span { color: var(--muted); font-size: 12px; }
+  .delta { font-size: 12px; font-weight: 600; color: var(--muted); }
+  .delta.up { color: var(--ok); }
+  .banner { display: flex; gap: 10px; align-items: flex-start; border-radius: 14px; padding: 12px 14px; margin-bottom: 12px;
+    border: 1px solid var(--line); background: var(--surface); font-size: 14px; }
+  .banner .dot { width: 10px; height: 10px; border-radius: 99px; margin-top: 5px; flex: none; }
+  .banner.good .dot { background: var(--ok); } .banner.warn .dot { background: var(--warn); } .banner.bad .dot { background: var(--danger); }
+  .banner b { display: block; }
+  .muted { color: var(--muted); }
   .hint { color: var(--muted); font-size: 12.5px; margin: 8px 0 0; }
-  .empty { text-align: center; color: var(--muted); padding: 40px 10px; }
+  .progress { margin: 10px 0 4px; }
+  .progress .lbl { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px; }
+  .bar { height: 10px; border-radius: 99px; background: var(--surface-2); overflow: hidden; }
+  .bar > i { display: block; height: 100%; border-radius: 99px; background: var(--chart); }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  .chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 12px; scrollbar-width: none; }
+  .chip { flex: none; border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 99px;
+    padding: 8px 14px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; min-height: 38px; }
+  .chip.on { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  .steps { margin: 0; padding-left: 22px; }
+  .steps li { margin: 0 0 8px; }
+  .switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0;
+    border-bottom: 1px solid var(--line); }
+  .switch:last-child { border-bottom: 0; }
+  .switch small { display: block; color: var(--muted); font-size: 12.5px; }
+  .toggle { position: relative; width: 50px; height: 30px; flex: none; }
+  .toggle input { opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; position: absolute; z-index: 1; }
+  .toggle span { position: absolute; inset: 0; border-radius: 99px; background: var(--surface-2); border: 1px solid var(--line); transition: .2s; }
+  .toggle span::after { content: ""; position: absolute; width: 22px; height: 22px; top: 3px; left: 3px; border-radius: 99px;
+    background: var(--muted); transition: .2s; }
+  .toggle input:checked + span { background: var(--accent); border-color: transparent; }
+  .toggle input:checked + span::after { left: 24px; background: var(--accent-ink); }
+  .toggle input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+  .form-row label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); flex: 1; min-width: 90px; }
+  select, input[type=email], input[type=password] { font: inherit; color: var(--text); background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-height: 44px; width: 100%; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .seg button { flex: 1; border: 0; background: var(--surface-2); color: var(--text); font: inherit; font-weight: 600;
+    min-height: 42px; cursor: pointer; }
+  .seg button.on { background: var(--accent); color: var(--accent-ink); }
+  .chart { position: relative; }
+  .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .tip { position: absolute; pointer-events: none; background: var(--text); color: var(--bg); font-size: 12.5px; font-weight: 600;
+    padding: 6px 9px; border-radius: 8px; white-space: nowrap; transform: translate(-50%, -110%); display: none; }
+  .empty { text-align: center; color: var(--muted); padding: 30px 10px; }
   #login { max-width: 360px; margin: 14vh auto 0; padding: 0 16px; text-align: center; }
   #login form, .stack { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; }
   .err { color: var(--danger); font-size: 13px; min-height: 18px; }
@@ -89,7 +139,9 @@
     background: var(--text); color: var(--bg); padding: 12px 14px; border-radius: 10px; font-weight: 600;
     max-width: 520px; margin: 0 auto; opacity: 0; transform: translateY(8px); transition: .2s; pointer-events: none; }
   .toast.show { opacity: 1; transform: none; }
+  a { color: var(--link); }
   [hidden] { display: none !important; }
+  @media (max-width: 380px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tile b { font-size: 20px; } }
 </style>
 </head>
 <body>
@@ -107,13 +159,30 @@
 <div id="app" hidden>
   <header>
     <img class="logo" src="icon-192.png" alt="">
-    <h1>TechPulse Studio</h1>
+    <h1 id="pageTitle">Home</h1>
     <button class="icon-btn" id="reload">Refresh</button>
   </header>
   <main>
-    <section id="tab-videos"></section>
-    <section id="tab-stats" hidden></section>
-    <section id="tab-account" hidden>
+    <section id="tab-home"></section>
+    <section id="tab-videos" hidden></section>
+    <section id="tab-insights" hidden></section>
+    <section id="tab-auto" hidden></section>
+    <section id="tab-more" hidden>
+      <div class="panel">
+        <h2>Appearance</h2>
+        <div class="seg" id="themeSeg">
+          <button data-theme="system">System</button><button data-theme="light">Day</button><button data-theme="dark">Night</button>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>YouTube</h2>
+        <div class="actions" style="margin-top:0">
+          <a class="btn" href="https://studio.youtube.com" target="_blank" rel="noopener">YouTube Studio</a>
+          <a class="btn" href="https://www.youtube.com/@techpulse-op" target="_blank" rel="noopener">Our channel</a>
+          <a class="btn" href="https://studio.youtube.com/channel/UCv9pbVQYx7UOVW4y9Rjo9bg/monetization" target="_blank" rel="noopener">Monetization</a>
+        </div>
+        <p class="hint">Watch hours and earnings are only in YouTube Studio.</p>
+      </div>
       <div class="panel">
         <h2>Account</h2>
         <div class="hint" id="who"></div>
@@ -123,18 +192,14 @@
         </form>
         <div class="actions"><button class="btn" id="logout">Log out</button></div>
       </div>
-      <div class="panel">
-        <h2>How it works</h2>
-        <p class="hint">New videos are made automatically 3 times a day and uploaded to YouTube as private.
-          Watch them here, tap Publish, and they go public within about 10 minutes.
-          Videos older than 7 days are removed from this app (they stay on YouTube).</p>
-      </div>
     </section>
   </main>
   <nav>
-    <button data-tab="videos" class="on">Videos</button>
-    <button data-tab="stats">Stats</button>
-    <button data-tab="account">Account</button>
+    <button data-tab="home" class="on">Home</button>
+    <button data-tab="videos">Videos</button>
+    <button data-tab="insights">Insights</button>
+    <button data-tab="auto">Automation</button>
+    <button data-tab="more">More</button>
   </nav>
 </div>
 <div class="toast" id="toast"></div>
@@ -145,119 +210,322 @@
 const $ = s => document.querySelector(s);
 const cfg = window.TP_CONFIG || {};
 const db = supabase.createClient(cfg.url, cfg.key);
-let videos = [], thumbs = {}, openId = null;
+const S = { videos: [], insights: [], stats: [], runs: [], settings: {}, requests: [], thumbs: {}, openId: null,
+            vfilter: "all", ifilter: "all" };
+
+// Mirrors the cloud schedule (.github/workflows/factory.yml) and the daily themes in autotube.py.
+const SCHEDULE = [
+  { utc: [12, 17], lang: "en", what: "1 long video + 1 Short" },
+  { utc: [13, 37], lang: "hi", what: "1 long video + 1 Short" },
+  { utc: [21, 23], lang: "en", what: "1 Short" },
+];
+const DAY_FOCUS = {
+  en: ["AI tools and AI drama", "Phone launches and leaks", "Hacks, outages and data leaks",
+       "Big tech business (Apple, Google, Nvidia)", "Apps changing their rules", "Gadgets and gaming", "The week's biggest story, explained"],
+  hi: ["AI in India", "Phone prices and launches in India", "Bank and UPI security, data leaks",
+       "Jio, Airtel and Indian startups", "App rules and bans in India", "Budget gadgets in India", "The week's biggest story, in Hindi"],
+};
+const LANG_NAME = { en: "English", hi: "Hindi" };
 
 function toast(msg) {
   const t = $("#toast"); t.textContent = msg; t.classList.add("show");
   clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2800);
 }
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const num = n => new Intl.NumberFormat(undefined, { notation: "compact" }).format(n || 0);
+const num = n => new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(n || 0);
+const full = n => new Intl.NumberFormat().format(n || 0);
 const when = iso => new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+const dayOrdinal = d => Math.floor(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 86400000) + 719163; // = Python date.toordinal()
 
-function state(v) {
+function vstate(v) {
+  const held = v.meta && v.meta.hold;
   if (!v.youtube_id) return ["NOT UPLOADED", "b-private"];
   if (v.status === "published" || v.privacy === "public") return ["PUBLIC", "b-public"];
   if (v.publish_requested) return ["PUBLISHING...", "b-pending"];
+  if (held) return ["HELD BY CHECK", "b-held"];
   return ["PRIVATE", "b-private"];
 }
 
-async function loadVideos() {
-  const { data, error } = await db.from("videos").select("*").order("created_at", { ascending: false });
-  if (error) { toast("Error: " + error.message); return; }
-  videos = data;
-  const paths = videos.map(v => v.thumb_path).filter(Boolean);
+async function loadAll() {
+  const [videos, insights, stats, runs, settings, requests] = await Promise.all([
+    db.from("videos").select("*").order("created_at", { ascending: false }),
+    db.from("insights").select("*").order("created_at", { ascending: false }).limit(1000),
+    db.from("channel_stats").select("*").order("day", { ascending: true }).limit(400),
+    db.from("runs").select("*").order("started_at", { ascending: false }).limit(12),
+    db.from("settings").select("*"),
+    db.from("run_requests").select("*").order("created_at", { ascending: false }).limit(6),
+  ]);
+  const err = [videos, insights, stats, runs, settings, requests].find(r => r.error);
+  if (err) toast("Error: " + err.error.message);
+  S.videos = videos.data || []; S.insights = insights.data || []; S.stats = stats.data || [];
+  S.runs = runs.data || []; S.requests = requests.data || [];
+  S.settings = Object.fromEntries((settings.data || []).map(r => [r.key, r.value]));
+  const paths = S.videos.map(v => v.thumb_path).filter(Boolean);
   if (paths.length) {
     const { data: urls } = await db.storage.from("videos").createSignedUrls(paths, 3600);
-    (urls || []).forEach(u => { if (u.signedUrl) thumbs[u.path] = u.signedUrl; });
+    (urls || []).forEach(u => { if (u.signedUrl) S.thumbs[u.path] = u.signedUrl; });
   }
-  renderVideos(); renderStats();
+  renderHome(); renderVideos(); renderInsights(); renderAuto();
 }
 
+// ---------- Home ----------
+function nextRuns() {
+  const now = new Date(), out = [];
+  for (let d = 0; d < 2; d++) for (const s of SCHEDULE) {
+    const t = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + d, s.utc[0], s.utc[1]));
+    if (t > now) out.push({ ...s, at: t, theme: DAY_FOCUS[s.lang][dayOrdinal(t) % 7] });
+  }
+  return out.sort((a, b) => a.at - b.at).slice(0, 3);
+}
+const inTime = t => { const m = Math.round((t - new Date()) / 60000); return m < 60 ? `in ${m} min` : `in ${Math.floor(m / 60)} h ${m % 60} min`; };
+
+function renderHome() {
+  const last = S.stats[S.stats.length - 1] || { subscribers: 0, views: 0, videos: 0 };
+  const weekAgo = S.stats.filter(s => new Date(s.day) <= new Date(Date.now() - 6.5 * 86400000)).pop() || S.stats[0] || last;
+  const d = (k) => { const x = (last[k] || 0) - (weekAgo[k] || 0); return x > 0 ? `<span class="delta up">+${num(x)} this week</span>` : `<span class="delta">+0 this week</span>`; };
+  const bad = S.insights.filter(i => i.health && new Date(i.updated_at || i.created_at) > new Date(Date.now() - 14 * 86400000));
+  const paused = S.settings.paused === true, autopub = S.settings.autopublish !== false;
+  let banner;
+  if (bad.length) banner = `<div class="banner bad"><span class="dot"></span><div><b>Safety pause on</b>YouTube rejected or removed ${bad.length} video(s) recently, so new uploads stay private for 14 days. Check YouTube Studio for any warning.</div></div>`;
+  else if (paused) banner = `<div class="banner warn"><span class="dot"></span><div><b>Automation paused</b>No new videos are made until you switch it back on in Automation.</div></div>`;
+  else banner = `<div class="banner good"><span class="dot"></span><div><b>All systems running</b>${autopub ? "Videos publish automatically after the fact and safety check." : "Auto-publish is off: new videos upload as private for you to review."}</div></div>`;
+  const goal = (n, target, label) => `<div class="progress"><div class="lbl"><span>${label}</span><span class="muted">${full(n)} / ${full(target)}</span></div>
+    <div class="bar" role="progressbar" aria-valuenow="${n}" aria-valuemax="${target}"><i style="width:${Math.min(100, n / target * 100)}%"></i></div></div>`;
+  const runRow = r => `<tr><td>${when(r.started_at)}<div class="muted" style="font-size:12px">${esc(LANG_NAME[r.lang] || r.lang)} · ${esc(r.note || "")}</div></td>
+    <td class="n">${r.finished_at ? `${r.made} made<br><span class="muted">${r.published} public${r.held ? `, ${r.held} held` : ""}${r.failed ? `, ${r.failed} failed` : ""}</span>` : `<span class="badge b-pending">RUNNING</span>`}</td></tr>`;
+  $("#tab-home").innerHTML = `${banner}
+    <div class="tiles">
+      <div class="tile"><span>Subscribers</span><b>${full(last.subscribers)}</b>${d("subscribers")}</div>
+      <div class="tile"><span>Total views</span><b>${num(last.views)}</b>${d("views")}</div>
+      <div class="tile"><span>Videos</span><b>${full(last.videos)}</b>${d("videos")}</div>
+    </div>
+    <div class="panel"><h2>Subscribers over time</h2><div class="chart" id="growth"></div></div>
+    <div class="panel"><h2>Road to monetization</h2>
+      ${goal(last.subscribers, 500, "Expanded Partner Program (memberships)")}
+      ${goal(last.subscribers, 1000, "Full Partner Program (ads)")}
+      <p class="hint">Also needs 4,000 watch hours in 12 months, or 10M Shorts views in 90 days. Watch hours are shown only in YouTube Studio.</p>
+    </div>
+    <div class="panel"><h2>Coming up</h2><table><tbody>
+      ${nextRuns().map(r => `<tr><td><b>${r.at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</b> <span class="muted">${inTime(r.at)}</span>
+        <div class="muted" style="font-size:12.5px">Theme: ${esc(r.theme)}</div></td>
+        <td class="n"><span class="badge b-lang">${r.lang.toUpperCase()}</span><br><span class="muted" style="font-size:12px">${r.what}</span></td></tr>`).join("")}
+    </tbody></table><p class="hint">${paused ? "Paused: these runs will skip making videos." : "GitHub sometimes starts runs up to a few hours late."}</p></div>
+    <div class="panel"><h2>Latest runs</h2>${S.runs.length ? `<table><tbody>${S.runs.slice(0, 6).map(runRow).join("")}</tbody></table>`
+      : '<div class="hint">Run history starts with the next automatic run.</div>'}</div>`;
+  drawGrowth();
+}
+
+function drawGrowth() {
+  const el = $("#growth"), pts = S.stats.map(s => ({ x: new Date(s.day), y: s.subscribers }));
+  if (pts.length < 2) { el.innerHTML = '<div class="hint">The chart fills in as daily numbers are collected (after 2 days).</div>'; return; }
+  const W = 640, H = 220, P = { l: 44, r: 12, t: 12, b: 28 };
+  const x0 = +pts[0].x, x1 = +pts[pts.length - 1].x, ymax = Math.max(10, ...pts.map(p => p.y)) * 1.1;
+  const X = t => P.l + (t - x0) / Math.max(1, x1 - x0) * (W - P.l - P.r), Y = v => H - P.b - v / ymax * (H - P.t - P.b);
+  const ticks = [0, 0.5, 1].map(f => Math.round(ymax * f));
+  const path = pts.map((p, i) => `${i ? "L" : "M"}${X(+p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join("");
+  const fmtD = d => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Subscribers over time, from ${full(pts[0].y)} to ${full(pts[pts.length - 1].y)}">
+    ${ticks.map(t => `<line x1="${P.l}" x2="${W - P.r}" y1="${Y(t)}" y2="${Y(t)}" stroke="var(--grid)" stroke-width="1"/>
+      <text x="${P.l - 8}" y="${Y(t) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${num(t)}</text>`).join("")}
+    <text x="${P.l}" y="${H - 8}" font-size="11" fill="var(--muted)">${fmtD(pts[0].x)}</text>
+    <text x="${W - P.r}" y="${H - 8}" font-size="11" fill="var(--muted)" text-anchor="end">${fmtD(pts[pts.length - 1].x)}</text>
+    <path d="${path}" fill="none" stroke="var(--chart)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <line id="gx" y1="${P.t}" y2="${H - P.b}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3" visibility="hidden"/>
+    <circle id="gd" r="5" fill="var(--chart)" stroke="var(--surface)" stroke-width="2" visibility="hidden"/>
+    <rect x="${P.l}" y="0" width="${W - P.l - P.r}" height="${H}" fill="transparent" id="ghit"/>
+  </svg><div class="tip" id="gtip"></div>`;
+  const svg = el.querySelector("svg"), tip = $("#gtip");
+  const move = e => {
+    const r = svg.getBoundingClientRect(), sx = (e.clientX - r.left) * W / r.width;
+    const p = pts.reduce((a, b) => Math.abs(X(+b.x) - sx) < Math.abs(X(+a.x) - sx) ? b : a);
+    const cx = X(+p.x), cy = Y(p.y);
+    $("#gx").setAttribute("x1", cx); $("#gx").setAttribute("x2", cx); $("#gx").setAttribute("visibility", "visible");
+    $("#gd").setAttribute("cx", cx); $("#gd").setAttribute("cy", cy); $("#gd").setAttribute("visibility", "visible");
+    tip.style.display = "block"; tip.style.left = `${cx / W * 100}%`; tip.style.top = `${cy / H * r.height}px`;
+    tip.textContent = `${fmtD(p.x)}: ${full(p.y)} subscribers`;
+  };
+  const hide = () => { tip.style.display = "none"; $("#gx").setAttribute("visibility", "hidden"); $("#gd").setAttribute("visibility", "hidden"); };
+  $("#ghit").addEventListener("pointermove", move); $("#ghit").addEventListener("pointerdown", move);
+  $("#ghit").addEventListener("pointerleave", hide);
+}
+
+// ---------- Videos ----------
+const VFILTERS = { all: "All", en: "English", hi: "Hindi", long: "Long", short: "Shorts", held: "Held / private" };
 function renderVideos() {
-  const box = $("#tab-videos");
-  if (!videos.length) { box.innerHTML = '<div class="empty">No videos yet. New ones appear here after each automatic run.</div>'; return; }
-  box.innerHTML = videos.map(v => {
-    const [label, cls] = state(v), s = v.stats || {}, th = thumbs[v.thumb_path];
-    return `<div class="card ${v.id === openId ? "open" : ""}" data-id="${v.id}">
+  const f = S.vfilter;
+  const list = S.videos.filter(v => f === "all" || (f === "en" || f === "hi") && (v.lang || "en") === f
+    || (f === "long" || f === "short") && v.kind === f || f === "held" && v.youtube_id && v.privacy !== "public" && v.status !== "published");
+  const chips = `<div class="chips">${Object.entries(VFILTERS).map(([k, l]) => `<button class="chip ${k === f ? "on" : ""}" data-vf="${k}">${l}</button>`).join("")}</div>`;
+  const cards = list.length ? list.map(v => {
+    const [label, cls] = vstate(v), s = v.stats || {}, th = S.thumbs[v.thumb_path];
+    return `<div class="card ${v.id === S.openId ? "open" : ""}" data-id="${v.id}">
       <div class="row">
         <div class="thumb ${v.kind === "short" ? "short" : ""}" style="${th ? `background-image:url('${esc(th)}')` : ""}">${th ? "" : "▶"}</div>
-        <div class="meta">
-          <p class="title">${esc(v.title)}</p>
+        <div class="meta"><p class="title">${esc(v.title)}</p>
           <div class="sub">
             <span class="badge ${v.kind === "long" ? "b-long" : "b-short"}">${v.kind === "long" ? "LONG" : "SHORT"}</span>
             <span class="badge b-lang">${esc((v.lang || "en").toUpperCase())}</span>
             <span class="badge ${cls}">${label}</span>
             <span>${when(v.created_at)}</span>
-            ${v.youtube_id ? `<span>${num(s.viewCount)} views · ${num(s.likeCount)} likes</span>` : ""}
-          </div>
-        </div>
-      </div>
-      <div class="detail" id="d-${v.id}"></div>
-    </div>`;
-  }).join("");
-  if (openId) fillDetail(videos.find(v => v.id === openId));
+            ${v.youtube_id ? `<span>${num(s.viewCount)} views · ${num(s.likeCount)} likes · ${num(s.commentCount)} comments</span>` : ""}
+          </div></div></div>
+      <div class="detail" id="d-${v.id}"></div></div>`;
+  }).join("") : '<div class="empty">No videos here. The app keeps the last 7 days; older videos are in Insights and on YouTube.</div>';
+  $("#tab-videos").innerHTML = chips + cards;
+  if (S.openId) fillDetail(S.videos.find(v => v.id === S.openId));
 }
 
 async function fillDetail(v) {
   if (!v) return;
-  const el = $("#d-" + v.id);
-  const [label] = state(v);
-  const canPublish = v.youtube_id && label === "PRIVATE";
+  const el = $("#d-" + v.id); if (!el) return;
+  const [label] = vstate(v), fc = (v.meta && v.meta.fact_check) || null;
+  const canPublish = v.youtube_id && (label === "PRIVATE" || label === "HELD BY CHECK");
   el.innerHTML = `<div class="hint">Loading video...</div>`;
   let src = "";
-  if (v.preview_path) {
-    const { data } = await db.storage.from("videos").createSignedUrl(v.preview_path, 3600);
-    src = data?.signedUrl || "";
-  }
+  if (v.preview_path) { const { data } = await db.storage.from("videos").createSignedUrl(v.preview_path, 3600); src = data?.signedUrl || ""; }
+  const host = v.meta && v.meta.host ? `${v.meta.host.character === "nova" ? "Nova" : "Max"} (${v.meta.host.gender})` : "";
   el.innerHTML = `${src ? `<video src="${esc(src)}" controls playsinline preload="metadata"></video>` : '<div class="hint">Preview not available.</div>'}
+    ${fc ? `<div class="hint"><b>Fact check: ${esc(fc.verdict)}</b>${fc.issues && fc.issues.length ? "<br>" + fc.issues.map(esc).join("<br>") : ""}</div>` : ""}
+    ${host ? `<div class="hint">Host: ${esc(host)}</div>` : ""}
     <div class="actions">
-      ${canPublish ? `<button class="btn primary" data-act="publish">Publish to YouTube</button>` : ""}
+      ${canPublish ? `<button class="btn primary" data-act="publish">${label === "HELD BY CHECK" ? "Publish anyway" : "Publish to YouTube"}</button>` : ""}
       ${label === "PUBLISHING..." ? `<button class="btn" data-act="cancel">Cancel publish</button>` : ""}
-      ${v.youtube_id ? `<a class="btn" href="https://youtu.be/${esc(v.youtube_id)}" target="_blank" rel="noopener">Open on YouTube</a>` : ""}
+      ${v.youtube_id ? `<a class="btn" href="https://youtu.be/${esc(v.youtube_id)}" target="_blank" rel="noopener">Open on YouTube</a>
+        <a class="btn" href="https://studio.youtube.com/video/${esc(v.youtube_id)}/edit" target="_blank" rel="noopener">Edit in Studio</a>` : ""}
     </div>
     <pre>${esc(v.description || "(no description)")}</pre>`;
 }
 
 $("#tab-videos").addEventListener("click", async e => {
+  const chip = e.target.closest("[data-vf]");
+  if (chip) { S.vfilter = chip.dataset.vf; S.openId = null; renderVideos(); return; }
   const card = e.target.closest(".card"); if (!card) return;
-  const v = videos.find(x => x.id === card.dataset.id);
+  const v = S.videos.find(x => x.id === card.dataset.id);
   const act = e.target.closest("[data-act]")?.dataset.act;
   if (act) {
+    if (act === "publish" && v.meta && v.meta.hold && !confirm("The fact check held this video back. Publish it anyway?")) return;
     const { error } = await db.from("videos").update({ publish_requested: act === "publish" }).eq("id", v.id);
     if (error) return toast("Error: " + error.message);
     v.publish_requested = act === "publish";
-    toast(act === "publish" ? "Queued. It goes public within ~10 minutes." : "Publish cancelled");
-    renderVideos();
-    return;
+    toast(act === "publish" ? "Queued. It goes public at the next cloud check." : "Publish cancelled");
+    renderVideos(); return;
   }
-  if (e.target.closest(".row")) { openId = openId === v.id ? null : v.id; renderVideos(); }
+  if (e.target.closest(".row")) { S.openId = S.openId === v.id ? null : v.id; renderVideos(); }
 });
 
-function renderStats() {
-  const up = videos.filter(v => v.youtube_id), st = v => v.stats || {};
-  const views = up.reduce((a, v) => a + (st(v).viewCount || 0), 0);
-  const likes = up.reduce((a, v) => a + (st(v).likeCount || 0), 0);
-  const comments = up.reduce((a, v) => a + (st(v).commentCount || 0), 0);
-  const top = [...up].sort((a, b) => (st(b).viewCount || 0) - (st(a).viewCount || 0)).slice(0, 8);
-  $("#tab-stats").innerHTML = `
+// ---------- Insights ----------
+function renderInsights() {
+  const f = S.ifilter, rows = S.insights.filter(i => f === "all" || i.lang === f);
+  const groups = [["en", "short"], ["en", "long"], ["hi", "short"], ["hi", "long"]].map(([l, k]) => {
+    const g = S.insights.filter(i => i.lang === l && i.kind === k);
+    return { l, k, n: g.length, avg: g.length ? Math.round(g.reduce((a, b) => a + b.views, 0) / g.length) : 0 };
+  });
+  const best = groups.filter(g => g.n).sort((a, b) => b.avg - a.avg)[0];
+  const top = [...rows].sort((a, b) => b.views - a.views).slice(0, 15);
+  const totalViews = rows.reduce((a, b) => a + b.views, 0), totalLikes = rows.reduce((a, b) => a + b.likes, 0);
+  $("#tab-insights").innerHTML = `
+    <div class="chips">${[["all", "All"], ["en", "English"], ["hi", "Hindi"]].map(([k, l]) => `<button class="chip ${k === f ? "on" : ""}" data-if="${k}">${l}</button>`).join("")}</div>
     <div class="tiles">
-      <div class="tile"><b>${num(views)}</b><span>Views (last 7 days of videos)</span></div>
-      <div class="tile"><b>${num(likes)}</b><span>Likes</span></div>
-      <div class="tile"><b>${num(comments)}</b><span>Comments</span></div>
-      <div class="tile"><b>${up.length}</b><span>Videos uploaded</span></div>
+      <div class="tile"><span>Videos tracked</span><b>${full(rows.length)}</b></div>
+      <div class="tile"><span>Views</span><b>${num(totalViews)}</b></div>
+      <div class="tile"><span>Likes</span><b>${num(totalLikes)}</b></div>
     </div>
-    <div class="panel"><h2>Top videos</h2>
-      ${top.length ? top.map(v => `<div class="list-row"><span class="t">${esc(v.title)}</span><span class="n">${num(st(v).viewCount)} views</span></div>`).join("")
-        : '<div class="hint">No stats yet. They update after each automatic run.</div>'}
-    </div>`;
+    <div class="panel"><h2>Average views by format</h2>
+      ${best ? `<p class="hint" style="margin:0 0 8px">Best so far: <b>${LANG_NAME[best.l]} ${best.k === "long" ? "long videos" : "Shorts"}</b>, ${full(best.avg)} views on average.</p>` : ""}
+      <table><thead><tr><th>Format</th><th class="n">Videos</th><th class="n">Avg views</th></tr></thead><tbody>
+      ${groups.map(g => `<tr><td>${LANG_NAME[g.l]} ${g.k === "long" ? "long" : "Shorts"}</td><td class="n">${g.n}</td><td class="n">${g.n ? full(g.avg) : "-"}</td></tr>`).join("")}
+      </tbody></table></div>
+    <div class="panel"><h2>Top videos (last 6 months)</h2>
+      ${top.length ? `<table><thead><tr><th>Video</th><th class="n">Views</th><th class="n">Likes</th></tr></thead><tbody>
+      ${top.map(i => `<tr><td><a href="https://youtu.be/${esc(i.youtube_id)}" target="_blank" rel="noopener">${esc(i.title)}</a>
+        <div class="muted" style="font-size:12px">${i.kind === "long" ? "Long" : "Short"} · ${(i.lang || "en").toUpperCase()} · ${new Date(i.created_at).toLocaleDateString()}${i.health ? ` · <span style="color:var(--danger)">${esc(i.health)}</span>` : ""}</div></td>
+        <td class="n">${full(i.views)}</td><td class="n">${full(i.likes)}</td></tr>`).join("")}</tbody></table>`
+      : '<div class="hint">No data yet.</div>'}
+      <p class="hint">The story picker reads this same data before every run and makes more of what wins.</p></div>`;
+}
+$("#tab-insights").addEventListener("click", e => { const c = e.target.closest("[data-if]"); if (c) { S.ifilter = c.dataset.if; renderInsights(); } });
+
+// ---------- Automation ----------
+function renderAuto() {
+  const paused = S.settings.paused === true, autopub = S.settings.autopublish !== false;
+  const today = dayOrdinal(new Date());
+  $("#tab-auto").innerHTML = `
+    <div class="panel"><h2>Controls</h2>
+      <div class="switch"><div>Automation running<small>Off = scheduled runs skip making videos.</small></div>
+        <label class="toggle"><input type="checkbox" id="swRun" ${paused ? "" : "checked"} aria-label="Automation running"><span></span></label></div>
+      <div class="switch"><div>Auto-publish<small>Off = new videos upload as private for you to review here.</small></div>
+        <label class="toggle"><input type="checkbox" id="swPub" ${autopub ? "checked" : ""} aria-label="Auto-publish"><span></span></label></div>
+    </div>
+    <div class="panel"><h2>Make videos now</h2>
+      <div class="form-row">
+        <label>Language<select id="rqLang"><option value="en">English</option><option value="hi">Hindi</option></select></label>
+        <label>Long video<select id="rqLong"><option value="0">No</option><option value="1">Yes</option></select></label>
+        <label>Shorts<select id="rqShorts"><option>0</option><option selected>1</option><option>2</option><option>3</option></select></label>
+      </div>
+      <div class="actions"><button class="btn primary" id="rqGo">Start</button></div>
+      <p class="hint">Starts at the next cloud check (usually within an hour). YouTube allows about 6 uploads a day, so extra requests beyond that are skipped.</p>
+      ${S.requests.length ? `<table style="margin-top:8px"><tbody>${S.requests.map(r => `<tr><td>${when(r.created_at)}<div class="muted" style="font-size:12px">${LANG_NAME[r.lang]} · ${r.long ? "1 long + " : ""}${r.shorts} Shorts</div></td>
+        <td class="n"><span class="badge ${r.status === "started" ? "b-public" : r.status === "pending" ? "b-pending" : "b-private"}">${esc(r.status.toUpperCase())}</span></td></tr>`).join("")}</tbody></table>` : ""}
+    </div>
+    <div class="panel"><h2>Daily schedule (your time)</h2><table><thead><tr><th>Time</th><th>Language</th><th>Makes</th></tr></thead><tbody>
+      ${SCHEDULE.map(s => { const t = new Date(); t.setUTCHours(s.utc[0], s.utc[1], 0, 0);
+        return `<tr><td>${t.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</td><td>${LANG_NAME[s.lang]}</td><td>${s.what}</td></tr>`; }).join("")}
+      </tbody></table></div>
+    <div class="panel"><h2>This week's themes</h2><table><thead><tr><th>Day</th><th>English</th><th>Hindi</th></tr></thead><tbody>
+      ${[0, 1, 2, 3, 4, 5, 6].map(i => { const d = new Date(Date.now() + i * 86400000);
+        return `<tr><td>${i ? d.toLocaleDateString(undefined, { weekday: "short" }) : "Today"}</td><td>${DAY_FOCUS.en[(today + i) % 7]}</td><td>${DAY_FOCUS.hi[(today + i) % 7]}</td></tr>`; }).join("")}
+      </tbody></table><p class="hint">A theme only breaks ties: the day's biggest trending stories and your best-performing topics come first.</p></div>
+    <div class="panel"><h2>How each video is made</h2><ol class="steps">
+      <li>Reads trends: Google Trends, Google News Tech, Hacker News, YouTube trending (US for English, India for Hindi).</li>
+      <li>Picks stories, steered by what got the most views on this channel.</li>
+      <li>Collects about 10 headlines from different outlets; the script may only use those facts.</li>
+      <li>Writes the script, title, description and tags from real YouTube search phrases.</li>
+      <li>Fact and safety check: fixes unsupported claims; holds back risky or unsupported stories.</li>
+      <li>Voice and presenter (Max or Nova), lip sync, real photos with camera moves, fact cards, music and sound effects.</li>
+      <li>Uploads, adds the thumbnail, a question comment and the language playlist.</li>
+      <li>Replies to up to 5 genuine comments, updates stats and checks channel health.</li>
+    </ol></div>`;
 }
 
+async function setSetting(key, value) {
+  const { error } = await db.from("settings").update({ value, updated_at: new Date().toISOString() }).eq("key", key);
+  if (error) { toast("Error: " + error.message); return false; }
+  S.settings[key] = value; renderHome(); return true;
+}
+$("#tab-auto").addEventListener("change", async e => {
+  if (e.target.id === "swRun") { if (await setSetting("paused", !e.target.checked)) toast(e.target.checked ? "Automation on" : "Automation paused"); else e.target.checked = !e.target.checked; }
+  if (e.target.id === "swPub") { if (await setSetting("autopublish", e.target.checked)) toast(e.target.checked ? "Auto-publish on" : "New videos will stay private"); else e.target.checked = !e.target.checked; }
+});
+$("#tab-auto").addEventListener("click", async e => {
+  if (e.target.id !== "rqGo") return;
+  const body = { lang: $("#rqLang").value, long: +$("#rqLong").value, shorts: +$("#rqShorts").value };
+  if (!body.long && !body.shorts) return toast("Pick at least one video");
+  e.target.disabled = true;
+  const { error } = await db.from("run_requests").insert(body);
+  e.target.disabled = false;
+  if (error) return toast("Error: " + error.message);
+  toast("Requested. It starts at the next cloud check.");
+  const { data } = await db.from("run_requests").select("*").order("created_at", { ascending: false }).limit(6);
+  S.requests = data || []; renderAuto();
+});
+
+// ---------- shell ----------
+const TITLES = { home: "Home", videos: "Videos", insights: "Insights", auto: "Automation", more: "More" };
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
   document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
-  ["videos", "stats", "account"].forEach(t => $("#tab-" + t).hidden = t !== b.dataset.tab);
+  Object.keys(TITLES).forEach(t => $("#tab-" + t).hidden = t !== b.dataset.tab);
+  $("#pageTitle").textContent = TITLES[b.dataset.tab];
+  window.scrollTo(0, 0);
 });
-$("#reload").onclick = () => { loadVideos(); toast("Refreshed"); };
+$("#reload").onclick = () => { loadAll(); toast("Refreshed"); };
+
+function applyTheme(t) {
+  if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
+  try { t === "system" ? localStorage.removeItem("tp-theme") : localStorage.setItem("tp-theme", t); } catch (_) {}
+  document.querySelectorAll("#themeSeg button").forEach(b => b.classList.toggle("on", b.dataset.theme === t));
+}
+document.querySelectorAll("#themeSeg button").forEach(b => b.onclick = () => applyTheme(b.dataset.theme));
+applyTheme(document.documentElement.dataset.theme || "system");
 
 $("#loginForm").onsubmit = async e => {
   e.preventDefault(); $("#loginErr").textContent = "";
@@ -276,7 +544,7 @@ async function start() {
   if (!session) { $("#app").hidden = true; $("#login").hidden = false; return; }
   $("#login").hidden = true; $("#app").hidden = false;
   $("#who").textContent = "Logged in as " + session.user.email;
-  loadVideos();
+  loadAll();
 }
 if (!cfg.url) document.body.innerHTML = '<div class="empty">App is not configured yet.</div>';
 else start();

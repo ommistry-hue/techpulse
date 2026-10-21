@@ -1024,9 +1024,21 @@ def description(meta, short, topic, credits, chapter_list=()):
 SAFETY_PAUSE = False  # set by channel_health(): YouTube rejected/removed something recently
 
 
+def get_setting(key, default):
+    """App-controlled switch (Studio app > Controls). Falls back to `default` when Supabase is off or unreachable."""
+    if not sb_on():
+        return default
+    try:
+        rows = sb_rest("GET", f"settings?select=value&key=eq.{key}")
+        return rows[0]["value"] if rows else default
+    except Exception:
+        return default
+
+
 def privacy_for(meta):
-    """Auto-publish (YT_PRIVACY=public) unless the fact-check held the video back or the channel safety pause is on."""
-    if meta.get("hold") or SAFETY_PAUSE:
+    """Auto-publish (YT_PRIVACY=public) unless the fact-check held the video back, the channel safety pause is on,
+    or auto-publish is switched off in the app."""
+    if meta.get("hold") or SAFETY_PAUSE or get_setting("autopublish", True) is False:
         return "private"
     return os.environ.get("YT_PRIVACY", "private")
 
@@ -1245,7 +1257,8 @@ def record(work, kind, meta, desc, duration, vid, thumb):
         "privacy": privacy_for(meta) if vid else None,
         "status": "published" if vid and privacy_for(meta) == "public" else ("uploaded" if vid else "rendered"),
         "preview_path": preview, "thumb_path": thumb_path, "duration_s": round(duration, 1),
-        "meta": {k: meta.get(k) for k in ("pinned_comment", "keywords", "thumbnail_text", "fact_check", "host")}})
+        "meta": {**{k: meta.get(k) for k in ("pinned_comment", "keywords", "thumbnail_text", "fact_check", "host")},
+                 "hold": bool(meta.get("hold"))}})
     if vid:
         sb_rest("POST", "insights", prefer="return=representation,resolution=merge-duplicates", json={"youtube_id": vid, "lang": LANG, "kind": kind, "topic": meta["topic"], "title": meta["title"]})
     log(f"[{kind}] saved to Supabase")
@@ -1297,7 +1310,49 @@ def update_stats():
             sb_rest("PATCH", f"insights?youtube_id=eq.{v['id']}", json={
                 "views": st["viewCount"], "likes": st["likeCount"], "comments": st["commentCount"], "updated_at": now})
     log(f"stats updated for {len(ids)} videos")
+    save_channel_stats()
     channel_health()
+
+
+def save_channel_stats():
+    """One row per day of subscribers / views / video count, for the app's growth chart."""
+    s = youtube_client().channels().list(part="statistics", mine=True).execute()["items"][0]["statistics"]
+    sb_rest("POST", "channel_stats", prefer="return=minimal,resolution=merge-duplicates", json={
+        "day": str(datetime.datetime.now(datetime.timezone.utc).date()),
+        "subscribers": int(s.get("subscriberCount", 0)), "views": int(s.get("viewCount", 0)),
+        "videos": int(s.get("videoCount", 0)),
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()})
+    log(f"channel: {s.get('subscriberCount')} subscribers, {s.get('viewCount')} views, {s.get('videoCount')} videos")
+
+
+def process_requests():
+    """'Run now' taps in the app become factory runs. Runs inside GitHub Actions with its own short-lived token;
+    capped so the daily YouTube upload limit (about 6) is never exceeded."""
+    pending = sb_rest("GET", "run_requests?select=*&status=eq.pending&order=created_at.asc")
+    if not pending:
+        log("run requests: none")
+        return
+    token, repo = os.environ.get("GITHUB_TOKEN"), os.environ.get("GITHUB_REPOSITORY")
+    today = str(datetime.datetime.now(datetime.timezone.utc).date())
+    uploads = len(sb_rest("GET", f"videos?select=id&youtube_id=not.is.null&created_at=gte.{today}T00:00:00Z"))
+    for req in pending:
+        want = req["long"] + req["shorts"]
+        if want == 0:
+            status = "skipped: nothing requested"
+        elif not (token and repo):
+            status = "failed: not running in the cloud"
+        elif uploads + want > 6:
+            status = f"skipped: daily upload limit ({uploads} today)"
+        else:
+            r = requests.post(f"https://api.github.com/repos/{repo}/actions/workflows/factory.yml/dispatches",
+                              headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+                              json={"ref": "main", "inputs": {"lang": req["lang"], "long": str(req["long"]),
+                                                              "shorts": str(req["shorts"])}}, timeout=30)
+            status = "started" if r.status_code == 204 else f"failed: GitHub {r.status_code}"
+            if r.status_code == 204:
+                uploads += want
+        sb_rest("PATCH", f"run_requests?id=eq.{req['id']}", json={"status": status})
+        log(f"run request {req['id']} ({req['lang']} {req['long']}L+{req['shorts']}S): {status}")
 
 
 def channel_health():
@@ -1354,6 +1409,7 @@ def main():
     ap.add_argument("--stats", action="store_true", help="refresh YouTube stats in Supabase")
     ap.add_argument("--cleanup", action="store_true", help=f"delete Supabase records/files older than {KEEP_DAYS} days")
     ap.add_argument("--reply-comments", action="store_true", help="reply to new viewer comments (max 5 per run)")
+    ap.add_argument("--process-requests", action="store_true", help="start runs requested from the app")
     args = ap.parse_args()
     load_env()
     global LANG, AUTH_MODE
@@ -1367,7 +1423,8 @@ def main():
         upload_existing(args.upload_dir)
         return
     maintenance = [f for flag, f in ((args.publish_pending, publish_pending), (args.stats, update_stats),
-                                     (args.cleanup, cleanup), (args.reply_comments, reply_comments)) if flag]
+                                     (args.cleanup, cleanup), (args.reply_comments, reply_comments),
+                                     (args.process_requests, process_requests)) if flag]
     for f in maintenance:
         try:  # maintenance must never block making today's videos
             f()
@@ -1377,6 +1434,20 @@ def main():
         return
     args.long = 1 if args.long is None else args.long
     args.shorts = 1 if args.shorts is None else args.shorts
+    if get_setting("paused", False) is True:
+        log("PAUSED from the app (Controls > Pause automation): no new videos this run")
+        return
+
+    run_id = None
+    if sb_on():
+        run_id = sb_rest("POST", "runs", json={"lang": LANG, "note": f"{args.long} long + {args.shorts} Shorts"})[0]["id"]
+    counts = {"made": 0, "published": 0, "held": 0, "failed": 0}
+
+    def finish_run(note=None):
+        if run_id:
+            sb_rest("PATCH", f"runs?id=eq.{run_id}", json={
+                **counts, "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                **({"note": note} if note else {})})
 
     history = json.loads(HISTORY.read_text(encoding="utf-8")) if HISTORY.exists() else []
     used = used_topics()
@@ -1387,11 +1458,13 @@ def main():
     log(f"Fetching trends ({L()['name']}, {L()['geo']})")
     trends = fetch_trends(L()["geo"])
     if not trends:
+        finish_run("no trends from any source")
         raise RuntimeError("No trends from any source")
 
     log(f"Picking stories: {args.long} long, {args.shorts} Shorts")
     jobs = plan_videos(trends, niche, used, args.long, args.shorts)
     if not jobs:
+        finish_run("no scripts written (AI models unavailable)")
         raise SystemExit("no scripts written")
 
     failures = 0
@@ -1424,9 +1497,14 @@ def main():
             record(work, kind, meta, desc, r["duration"], vid, thumb)
             history.append(entry)
             HISTORY.write_text(json.dumps(history, indent=2, ensure_ascii=False), encoding="utf-8")
+            counts["made"] += 1
+            counts["held"] += 1 if meta.get("hold") else 0
+            counts["published"] += 1 if vid and privacy_for(meta) == "public" else 0
         except Exception as e:  # one bad video must not stop the rest of the run
             failures += 1
+            counts["failed"] += 1
             log(f"[{kind}] FAILED: {e}")
+    finish_run()
     if failures:
         raise SystemExit(f"{failures} video(s) failed")
 
