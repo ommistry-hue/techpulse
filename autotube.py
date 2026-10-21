@@ -1742,9 +1742,13 @@ def update_stats(full=True):
             sb_rest("PATCH", f"insights?youtube_id=eq.{v['id']}", json={
                 "views": st["viewCount"], "likes": st["likeCount"], "comments": st["commentCount"], "updated_at": now})
     log(f"stats updated for {len(ids)} videos")
-    if not full:  # quick refresh (publish checks): view counts only, feeds the views-per-hour learning
+    save_channel_stats()  # 1 quota unit: keeps the app's subscriber/view tiles fresh every 10 minutes
+    if not full:  # quick refresh (publish checks): view counts + channel totals, feeds the views-per-hour learning
+        try:
+            update_goals()  # database only, no quota
+        except Exception as e:
+            log(f"goals skipped: {str(e)[:160]}")
         return
-    save_channel_stats()
     try:
         update_analytics(ids)
     except Exception as e:
@@ -1792,9 +1796,11 @@ def update_analytics(ids):
 def save_channel_stats():
     """One row per day of subscribers / views / video count, for the app's growth chart."""
     s = youtube_client().channels().list(part="statistics", mine=True).execute()["items"][0]["statistics"]
+    # The channel total lags hours behind YouTube Studio; per-video counts are fresher, so use whichever is higher.
+    video_views = sum(r["views"] or 0 for r in sb_rest("GET", "insights?select=views"))
     sb_rest("POST", "channel_stats", prefer="return=minimal,resolution=merge-duplicates", json={
         "day": str(datetime.datetime.now(datetime.timezone.utc).date()),
-        "subscribers": int(s.get("subscriberCount", 0)), "views": int(s.get("viewCount", 0)),
+        "subscribers": int(s.get("subscriberCount", 0)), "views": max(int(s.get("viewCount", 0)), video_views),
         "videos": int(s.get("videoCount", 0)),
         "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()})
     log(f"channel: {s.get('subscriberCount')} subscribers, {s.get('viewCount')} views, {s.get('videoCount')} videos")

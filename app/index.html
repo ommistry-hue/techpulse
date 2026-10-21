@@ -315,13 +315,15 @@ function nextRuns() {
   }
   return out.sort((a, b) => a.at - b.at).slice(0, 3);
 }
+const ago = t => { const m = Math.max(0, Math.round((Date.now() - new Date(t)) / 60000));
+  return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.floor(m / 60)} h ago` : `${Math.floor(m / 1440)} days ago`; };
 const inTime = t => { const m = Math.round((t - new Date()) / 60000); return m < 60 ? `in ${m} min` : `in ${Math.floor(m / 60)} h ${m % 60} min`; };
 
 function renderHome() {
   const last = S.stats[S.stats.length - 1] || { subscribers: 0, views: 0, videos: 0 };
   const weekAgo = S.stats.filter(s => new Date(s.day) <= new Date(Date.now() - 6.5 * 86400000)).pop() || S.stats[0] || last;
   const d = (k) => { const x = (last[k] || 0) - (weekAgo[k] || 0); return x > 0 ? `<span class="delta up">+${num(x)} this week</span>` : `<span class="delta">+0 this week</span>`; };
-  const bad = S.insights.filter(i => i.health && new Date(i.updated_at || i.created_at) > new Date(Date.now() - 14 * 86400000));
+  const bad = S.insights.filter(i => i.health && i.health !== "missing" && i.health_at && new Date(i.health_at) > new Date(Date.now() - 14 * 86400000));
   const paused = S.settings.paused === true, autopub = S.settings.autopublish !== false;
   let banner;
   if (bad.length) banner = `<div class="banner bad"><span class="dot"></span><div><b>Safety pause on</b>YouTube rejected or removed ${bad.length} video(s) recently, so new uploads stay private for 14 days. Check YouTube Studio for any warning.</div></div>`;
@@ -337,6 +339,9 @@ function renderHome() {
       <div class="tile"><span>Total views</span><b>${num(last.views)}</b>${d("views")}</div>
       <div class="tile"><span>Videos</span><b>${full(last.videos)}</b>${d("videos")}</div>
     </div>
+    <p class="hint" style="margin:-4px 2px 14px">${last.updated_at ? `Updated ${ago(last.updated_at)} · refreshes every 10 min.` : ""}
+      YouTube Studio shows new views and subscribers first; the numbers here follow within minutes to a few hours.
+      Watch hours run about 2 days behind (YouTube Analytics).</p>
     <div class="panel"><h2>Subscribers over time</h2><div class="chart" id="growth"></div></div>
     <div class="panel"><h2>Road to monetization</h2>
       ${goal(last.subscribers, 500, "Expanded Partner Program (memberships)")}
@@ -599,6 +604,15 @@ document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
   window.scrollTo(0, 0);
 });
 $("#reload").onclick = () => { loadAll(); toast("Refreshed"); };
+// Live data: reload every 2 minutes while the app is open, and whenever it comes back to the screen.
+// Skipped while typing or on the Automation/More tabs so forms are never reset.
+function autoRefresh() {
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
+  const formTab = !$("#tab-auto").hidden || !$("#tab-more").hidden;
+  if (!document.hidden && !$("#app").hidden && !typing && !formTab) loadAll();
+}
+setInterval(autoRefresh, 120000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) autoRefresh(); });
 
 function applyTheme(t) {
   if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
