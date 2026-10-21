@@ -859,7 +859,13 @@ def pexels_search(query, fmt, key):
             for v in r.json().get("videos", [])]
 
 
-WIKI_UA = {"User-Agent": "TechPulseVideoBot/1.0 (personal YouTube automation; python-requests)"}
+# Wikimedia requires a contact URL in the User-Agent (without it the media servers answer 429).
+WIKI_UA = {"User-Agent": "TechPulseBot/1.0 (https://ommistry-hue.github.io/techpulse/about.html) python-requests"}
+
+
+# Media titles with these words are skipped (sensitive imagery is a YouTube policy risk and off-brand).
+SENSITIVE_MEDIA = re.compile(r"\b(accident|death|dead|killed|kill|crash|war|weapon|gun|blood|injur\w*|victim|corpse|"
+                             r"nude|naked|protest|riot|terror\w*|bomb|explosion|fire|disaster|funeral)\b", re.I)
 
 
 def wikimedia_search(query):
@@ -878,6 +884,8 @@ def wikimedia_search(query):
             continue
         name = p["title"].removeprefix("File:")
         score = len(words & set(re.findall(r"[a-z0-9]+", name.lower())))
+        if SENSITIVE_MEDIA.search(name):
+            continue
         # Too few shared words = usually off-topic (and showing the wrong real person is misleading).
         if words and score < min(2, len(words)):
             continue
@@ -886,6 +894,35 @@ def wikimedia_search(query):
         license_ = md.get("LicenseShortName", {}).get("value", "see source")
         out.append({"id": f"wm{p['pageid']}", "image": ii.get("thumburl") or ii["url"], "score": score,
                     "credit": f"{name} - {artist} ({license_}) {ii.get('descriptionurl', '')}"})
+    return out
+
+
+def wikimedia_video_search(query):
+    """Free-licensed VIDEO clips from Wikimedia Commons (credited like photos). Uses Commons' own 480p/720p copies."""
+    r = requests.get("https://commons.wikimedia.org/w/api.php", headers=WIKI_UA, timeout=30, params={
+        "action": "query", "format": "json", "generator": "search", "gsrsearch": f"{query} filetype:video",
+        "gsrnamespace": 6, "gsrlimit": 10, "prop": "videoinfo", "viprop": "url|size|mime|extmetadata|derivatives"})
+    if not r.ok:
+        return []
+    words = {w for w in re.findall(r"[a-z0-9]+", query.lower()) if len(w) >= 3}
+    out = []
+    for p in r.json().get("query", {}).get("pages", {}).values():
+        vi = (p.get("videoinfo") or [{}])[0]
+        name = p["title"].removeprefix("File:")
+        score = len(words & set(re.findall(r"[a-z0-9]+", name.lower())))
+        if SENSITIVE_MEDIA.search(name):
+            continue
+        if (words and score < min(2, len(words))) or not 6 <= (vi.get("duration") or 0) <= 180:  # short files only
+            continue
+        ders = [d for d in vi.get("derivatives", []) if "webm" in d.get("type", "") and 360 <= (d.get("height") or 0) <= 480]
+        if not ders:
+            continue
+        src = max(ders, key=lambda d: d["height"])["src"]  # 480p when available: small and sharp enough
+        md = vi.get("extmetadata", {})
+        artist = html.unescape(re.sub(r"<[^>]+>", "", md.get("Artist", {}).get("value", "Unknown"))).strip()[:60]
+        license_ = md.get("LicenseShortName", {}).get("value", "see source")
+        out.append({"id": f"wv{p['pageid']}", "wikivideo": src, "duration": vi["duration"], "score": score,
+                    "credit": f"{name} - {artist} ({license_}) {vi.get('descriptionurl', '')}"})
     return out
 
 
@@ -902,7 +939,13 @@ def search_footage(query, fmt):
     images = wikimedia_search(query) if os.environ.get("USE_WIKIMEDIA", "1") == "1" else []
     random.shuffle(images)
     images.sort(key=lambda i: i["score"])  # best match popped first
-    return images + videos
+    clips = []
+    if os.environ.get("USE_WIKIMEDIA", "1") == "1" and os.environ.get("USE_WIKIMEDIA_VIDEO", "1") == "1":
+        try:
+            clips = sorted(wikimedia_video_search(query), key=lambda c: c["score"])
+        except Exception:
+            clips = []
+    return images + videos + clips  # popped from the end: real video clips first (capped in fetch_clips)
 
 
 def best_file(video, fmt):
@@ -912,6 +955,49 @@ def best_file(video, fmt):
     return min(same or files, key=lambda f: abs(f["width"] - fmt["w"]) + abs(f["height"] - fmt["h"]), default=None)
 
 
+def has_video(path, min_s=3.0):
+    """True if the file really contains a video stream of at least `min_s` seconds."""
+    err = subprocess.run([FFMPEG, "-i", str(path)], capture_output=True, text=True).stderr
+    m = re.search(r"Duration: (\d+):(\d+):([\d.]+)", err)
+    return "Video:" in err and bool(m) and int(m[1]) * 3600 + int(m[2]) * 60 + float(m[3]) >= min_s
+
+
+def fetch_wiki_clip(v, path, folder):
+    """Download a Commons clip in ONE request (seeking over HTTP triggers 429 rate limits), cut 10 s locally, verify."""
+    raw = folder / (path.stem + "_src.webm")
+    for attempt in range(3):
+        try:
+            with requests.get(v["wikivideo"], headers=WIKI_UA, stream=True, timeout=(15, 120)) as r:
+                if r.status_code == 429:
+                    time.sleep(int(r.headers.get("Retry-After", "10") or 10) * (attempt + 1))
+                    continue
+                r.raise_for_status()
+                size = 0
+                with open(raw, "wb") as fh:
+                    for b in r.iter_content(1 << 20):
+                        size += len(b)
+                        if size > 60 * 1024 * 1024:
+                            raise ValueError("clip too large")
+                        fh.write(b)
+            break
+        except Exception:
+            raw.unlink(missing_ok=True)
+            return False
+    if not raw.exists():
+        return False
+    try:
+        start = min(5.0, v["duration"] * 0.2)
+        ff(["-ss", f"{start:.1f}", "-t", "10", "-i", raw.name, "-an", "-vf", "scale=-2:720", "-c:v", "libx264",
+            "-preset", "veryfast", "-crf", "26", path.name], folder)
+    except Exception:
+        pass
+    raw.unlink(missing_ok=True)
+    if path.exists() and has_video(path):
+        return True
+    path.unlink(missing_ok=True)
+    return False
+
+
 def fetch_clips(keywords, folder, fmt, need):
     """Spread `need` clips across keywords in script order, distinct sources.
     Returns [{"path", "is_image", "credit"}]."""
@@ -919,6 +1005,7 @@ def fetch_clips(keywords, folder, fmt, need):
         return []
     results = {kw: search_footage(kw, fmt) for kw in keywords}
     clips, used = [], set()
+    max_video = max(1, need // 3)  # real motion in about a third of the scenes keeps renders fast
     while len(clips) < need and any(results.values()):
         for kw in keywords:
             if len(clips) >= need:
@@ -926,6 +1013,15 @@ def fetch_clips(keywords, folder, fmt, need):
             while results[kw]:
                 v = results[kw].pop()
                 if v["id"] in used:
+                    continue
+                if "wikivideo" in v:
+                    if sum(not c["is_image"] for c in clips) >= max_video:
+                        continue
+                    path = folder / f"clip{len(clips):02d}.mp4"
+                    used.add(v["id"])
+                    if fetch_wiki_clip(v, path, folder):
+                        clips.append({"path": path, "is_image": False, "credit": v.get("credit")})
+                        break
                     continue
                 if "image" in v:
                     ext = Path(urlparse(v["image"]).path).suffix.lower()
@@ -944,6 +1040,9 @@ def fetch_clips(keywords, folder, fmt, need):
                             for b in d.iter_content(1 << 20):
                                 fh.write(b)
                 except requests.RequestException:
+                    continue
+                if "image" not in v and not has_video(path):
+                    path.unlink(missing_ok=True)
                     continue
                 clips.append({"path": path, "is_image": "image" in v, "credit": v.get("credit")})
                 break
@@ -1039,13 +1138,13 @@ def render_motion(work, kind, words, duration, clips, title, sections, host=None
     Assets are served from the work folder."""
     fmt = FORMATS[kind]
     fps, total = 30, duration + 0.8
-    images = [c for c in clips if c["is_image"]]
+    media = clips  # photos and real video clips, in script order
     scenes = []
-    if images:
-        n = max(len(images), round(total / fmt["clip_secs"]))
+    if media:
+        n = max(len(media), round(total / fmt["clip_secs"]))
         seg = total / n
-        scenes = [{"start": round(i * seg, 3), "end": round((i + 1) * seg, 3), "src": images[i % len(images)]["path"].name}
-                  for i in range(n)]
+        scenes = [{"start": round(i * seg, 3), "end": round((i + 1) * seg, 3), "src": media[i % len(media)]["path"].name,
+                   "video": not media[i % len(media)]["is_image"]} for i in range(n)]
     for font in ("Anton-Regular.ttf", "Mukta-ExtraBold.ttf"):  # Mukta covers Devanagari (Hindi)
         shutil.copy(ROOT / "fonts" / font, work / font)
     shutil.copy(ROOT / "assets" / "logo.jpg", work / "logo.jpg")

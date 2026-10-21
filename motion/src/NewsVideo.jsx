@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  AbsoluteFill, Audio, Easing, Img, Sequence, continueRender, delayRender, interpolate, spring, staticFile,
+  AbsoluteFill, Audio, Easing, Img, OffthreadVideo, Sequence, continueRender, delayRender, interpolate, spring, staticFile,
   useCurrentFrame, useVideoConfig,
 } from "remotion";
 import { useAudioData, visualizeAudio } from "@remotion/media-utils";
@@ -33,10 +33,10 @@ const useTalk = (src) => {
 };
 
 // ---------- backgrounds: 4 camera styles + 3 transitions, so photos feel like footage ----------
-const Scene = ({ src, dur, index, L }) => {
+const Scene = ({ src, dur, index, L, video = false }) => {
   const frame = useCurrentFrame();
   const T = 12;
-  const style = index % 4, trans = index % 3;
+  const style = video ? index % 2 : index % 4, trans = index % 3;  // real clips: full-frame zoom/pan only
   const p = interpolate(frame, [0, dur + T], [0, 1], clamp);
   const enter = interpolate(frame, [0, T], [0, 1], { ...clamp, easing: Easing.out(Easing.cubic) });
   const exit = interpolate(frame, [dur, dur + T], [1, 0], clamp);
@@ -46,8 +46,10 @@ const Scene = ({ src, dur, index, L }) => {
     if (trans === 1) { sc = 1 + (1 - enter) * 0.25; flash = (1 - enter) * 0.7; } // punch-in flash
   }
   const opacity = (index === 0 || trans === 2 ? enter : 1) * exit;
-  const img = (extra) => <Img src={staticFile(src)} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", ...extra }} />;
-  const blurBg = (
+  const img = (extra) => video
+    ? <OffthreadVideo src={staticFile(src)} muted style={{ position: "absolute", inset: 0, width: "100%", height: "100%", ...extra, objectFit: "cover" }} />
+    : <Img src={staticFile(src)} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", ...extra }} />;
+  const blurBg = video ? null : (
     <Img src={staticFile(src)} style={{ position: "absolute", left: 0, top: 0, width: "25%", height: "25%", objectFit: "cover",
       filter: "blur(7px) brightness(0.5) saturate(1.3)", transform: "scale(4.4)", transformOrigin: "top left" }} />
   );
@@ -413,7 +415,7 @@ export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mo
         const from = Math.round(s.start * fps), dur = Math.max(1, Math.round((s.end - s.start) * fps));
         return (
           <Sequence key={i} from={from} durationInFrames={dur + 12} layout="none">
-            <Scene src={s.src} dur={dur} index={i} L={L} />
+            <Scene src={s.src} dur={dur} index={i} L={L} video={!!s.video} />
           </Sequence>
         );
       }) : <FallbackBg />}
