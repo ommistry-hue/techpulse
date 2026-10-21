@@ -1,14 +1,16 @@
 name: Factory (make + upload videos)
 
 # YouTube API quota is 10,000 units/day per Google project; one upload costs 1,600.
-# Two projects: English uploads use project 1, Hindi uploads project 2 -> 5 uploads each per day.
+# Two projects: English uploads use project 1, Hindi uploads project 2 -> 4 scheduled uploads each per day,
+# leaving 2 per project for breaking news (the cap is checked before every breaking upload).
 on:
   schedule:
     - cron: "17 12 * * *"   # English: 1 long + 1 Short  (US morning)
-    - cron: "43 16 * * *"   # English: 2 Shorts          (US midday)
+    - cron: "43 16 * * *"   # English: 1 Short           (US midday)
     - cron: "23 21 * * *"   # English: 1 Short           (US afternoon)
     - cron: "33 1 * * *"    # Hindi:   1 Short           (India 7 AM)
-    - cron: "47 7 * * *"    # Hindi:   2 Shorts          (India 1 PM)
+    - cron: "47 7 * * *"    # Hindi:   1 Short           (India 1 PM)
+    - cron: "29 */3 * * *"  # Breaking news check (both languages): a Short only when something big just broke
     - cron: "37 13 * * *"   # Hindi:   1 long + 1 Short  (India 7 PM)
   workflow_dispatch:
     inputs:
@@ -53,6 +55,8 @@ jobs:
       YT_PRIVACY: ${{ vars.YT_PRIVACY }}
       YT_CATEGORY: ${{ vars.YT_CATEGORY }}
       USE_WIKIMEDIA: ${{ vars.USE_WIKIMEDIA }}
+      AMAZON_TAG_US: ${{ vars.AMAZON_TAG_US }}
+      AMAZON_TAG_IN: ${{ vars.AMAZON_TAG_IN }}
       RHUBARB_VERSION: "1.14.0"
     steps:
       - uses: actions/checkout@v5
@@ -111,10 +115,11 @@ jobs:
         run: |
           case "$SCHEDULE" in
             "17 12 * * *") G=en; L=1; S=1 ;;
-            "43 16 * * *") G=en; L=0; S=2 ;;
+            "43 16 * * *") G=en; L=0; S=1 ;;
             "23 21 * * *") G=en; L=0; S=1 ;;
             "33 1 * * *")  G=hi; L=0; S=1 ;;
-            "47 7 * * *")  G=hi; L=0; S=2 ;;
+            "47 7 * * *")  G=hi; L=0; S=1 ;;
+            "29 */3 * * *") echo "args=--breaking" >> "$GITHUB_OUTPUT"; exit 0 ;;
             "37 13 * * *") G=hi; L=1; S=1 ;;
             *) G="${IN_LANG:-en}"; L="${IN_LONG:-1}"; S="${IN_SHORTS:-1}" ;;
           esac

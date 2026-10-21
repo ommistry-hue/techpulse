@@ -460,6 +460,7 @@ Return JSON only:
  "hashtags": ["...", "...", "..."],
  "thumbnail_text": "2-4 punchy words for the thumbnail",
  "pinned_comment": "one engaging question for viewers",
+ "products": ["0-3 products from the story people can buy now (phones, laptops, gadgets, consoles), as {{\"name\", \"search\"}} objects with the exact product name from the sources and amazon search words; empty list otherwise"],
  "sections": [{SECTION_SHAPE}],
  "keywords": ["{n_sections * 2} image search terms"]}}""", required=("topic", "title", "sections", "keywords"), timeout=timeout)
     finalize_sections(meta)
@@ -555,6 +556,7 @@ Return JSON only:
  "tags": ["..."],
  "hashtags": ["...", "...", "..."],
  "pinned_comment": "one engaging question",
+ "products": ["0-3 products from the story people can buy now (phones, laptops, gadgets, consoles), as {{\"name\", \"search\"}} objects with the exact product name from the sources and amazon search words; empty list otherwise"],
  "facts": ["2-3 on-screen fact cards, max 7 words each, only sourced facts"],
  "card": null,
  "script": "...",
@@ -1209,6 +1211,21 @@ def clean_tags(meta, limit=480):
     return out
 
 
+AFFILIATE = {"en": ("AMAZON_TAG_US", "https://www.amazon.com/s"), "hi": ("AMAZON_TAG_IN", "https://www.amazon.in/s")}
+
+
+def affiliate_block(meta):
+    """Amazon search links for products in the story (only when an Associates tag is configured), with disclosure."""
+    var, base = AFFILIATE[LANG]
+    tag = os.environ.get(var, "").strip()
+    items = [p for p in meta.get("products") or [] if isinstance(p, dict) and p.get("name") and p.get("search")][:3]
+    if not tag or not items:
+        return ""
+    lines = [f"- {p['name']}: {base}?k={requests.utils.quote(p['search'])}&tag={tag}" for p in items]
+    return ("Products mentioned (affiliate links):\n" + "\n".join(lines)
+            + "\nAs an Amazon Associate I earn from qualifying purchases.")
+
+
 LATEST_LONG = {}
 
 
@@ -1240,6 +1257,9 @@ def description(meta, short, topic, credits, chapter_list=()):
     if meta.get("sources"):
         parts.append(f"{tx['sources']}: " + ", ".join(meta["sources"]))
     parts.append(tx["subscribe"].format(c=channel) + "\n" + (tx["more_short"] if short else tx["more_long"]))
+    aff = affiliate_block(meta)
+    if aff:
+        parts.append(aff)
     parts.append(tx["ai"])
     if meta.get("music_credit"):
         parts.append(meta["music_credit"])
@@ -1555,6 +1575,10 @@ def update_stats():
         update_goals()
     except Exception as e:
         log(f"goals skipped: {str(e)[:160]}")
+    try:
+        optimize_titles()
+    except Exception as e:
+        log(f"titles skipped: {str(e)[:160]}")
     channel_health()
 
 
@@ -1703,6 +1727,49 @@ def retention_lessons(ya, rows):
         log("retention lessons: " + " | ".join(notes[:-1]))
 
 
+def optimize_titles(limit=3):
+    """Second chance for weak videos: 2-7 days old, under 40% of the typical (median) views for its language and
+    format over 30 days -> one new title from fresh search phrases. Each video is re-titled at most once."""
+    global LANG
+    current = LANG
+    base = sb_rest("GET", f"insights?select=lang,kind,views&created_at=gte.{days_ago(30)}&created_at=lt.{days_ago(2)}")
+    median = {}
+    for key in {(r["lang"], r["kind"]) for r in base}:
+        v = sorted(r["views"] for r in base if (r["lang"], r["kind"]) == key)
+        if len(v) >= 5:
+            median[key] = v[len(v) // 2]
+    rows = sb_rest("GET", f"insights?select=youtube_id,lang,kind,topic,title,views&retitled=is.null&health=is.null"
+                          f"&created_at=gte.{days_ago(7)}&created_at=lt.{days_ago(2)}&order=views.asc")
+    weak = [r for r in rows if (r["lang"], r["kind"]) in median and r["views"] < 0.4 * median[(r["lang"], r["kind"])]]
+    yt = youtube_client()
+    for r in weak[:limit]:
+        try:
+            LANG = r["lang"] or "en"
+            kw = keyword_research(r["topic"] or r["title"])
+            new = llm_json(f"""This YouTube {r['kind']} video gets far fewer views than usual. Write ONE better title.
+Current title: {r['title']}
+Topic: {r['topic']}
+YOUTUBE SEARCH SUGGESTIONS: {', '.join(kw) or '(none)'}
+{SEO_RULES}
+{lang_rules()}
+The new title must be clearly different, honest (same story, no new claims), keyword first, max {55 if r['kind'] == 'short' else 70}
+characters, no hashtags. Return JSON only: {{"title": "..."}}""", required=("title",))["title"].strip().strip('"')
+            if not new or new.lower() == r["title"].lower():
+                continue
+            snip = yt.videos().list(part="snippet", id=r["youtube_id"]).execute()["items"][0]["snippet"]
+            body = {k: snip[k] for k in ("description", "tags", "categoryId", "defaultLanguage", "defaultAudioLanguage")
+                    if k in snip}
+            yt.videos().update(part="snippet", body={"id": r["youtube_id"], "snippet": {**body, "title": new[:100]}}).execute()
+            sb_rest("PATCH", f"insights?youtube_id=eq.{r['youtube_id']}", json={"retitled": r["title"], "title": new[:100]})
+            sb_rest("PATCH", f"videos?youtube_id=eq.{r['youtube_id']}", json={"title": new[:100]})
+            log(f"re-titled ({r['views']} views): '{r['title']}' -> '{new}'")
+        except Exception as e:
+            log(f"re-title failed for {r['youtube_id']}: {str(e)[:120]}")
+    LANG = current
+    if not weak:
+        log("titles: no weak videos to re-title")
+
+
 def channel_health():
     """Any video YouTube rejected or removed in the last 14 days = pause auto-publishing (upload as private)
     until it clears, so one problem cannot snowball into strikes."""
@@ -1745,56 +1812,81 @@ def slugify(s):
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:40] or "video"
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--long", type=int, help="number of long videos (0 or 1, default 1)")
-    ap.add_argument("--shorts", type=int, help="number of Shorts (default 1)")
-    ap.add_argument("--no-upload", action="store_true")
-    ap.add_argument("--auth", action="store_true")
-    ap.add_argument("--lang", choices=sorted(LANGS), default="en", help="video language (en or hi)")
-    ap.add_argument("--upload-dir", help="upload an already-rendered video folder")
-    ap.add_argument("--publish-pending", action="store_true", help="make app-approved videos public")
-    ap.add_argument("--stats", action="store_true", help="refresh YouTube stats in Supabase")
-    ap.add_argument("--cleanup", action="store_true", help=f"delete Supabase records/files older than {KEEP_DAYS} days")
-    ap.add_argument("--reply-comments", action="store_true", help="reply to new viewer comments (max 5 per run)")
-    ap.add_argument("--process-requests", action="store_true", help="start runs requested from the app")
-    ap.add_argument("--weekly", action="store_true", help="make the long video the weekly Top 10 (default: Sundays)")
-    ap.add_argument("--project", type=int, choices=(1, 2), default=1, help="with --auth: which Google Cloud project to log in")
-    args = ap.parse_args()
-    load_env()
-    global LANG, PROJECT
-    LANG = args.lang
-    if args.auth:
-        PROJECT = args.project
-        youtube_client()
-        log(f"YouTube auth OK, {token_file()[0].name} saved")
-        return
-    if args.upload_dir:
-        upload_existing(args.upload_dir)
-        return
-    maintenance = [f for flag, f in ((args.publish_pending, publish_pending), (args.stats, update_stats),
-                                     (args.cleanup, cleanup), (args.reply_comments, reply_comments),
-                                     (args.process_requests, process_requests)) if flag]
-    for f in maintenance:
-        try:  # maintenance must never block making today's videos
-            f()
-        except Exception as e:
-            log(f"{f.__name__} failed: {str(e)[:200]}")
-    if maintenance and args.long is None and args.shorts is None:
-        return
-    args.long = 1 if args.long is None else args.long
-    args.shorts = 1 if args.shorts is None else args.shorts
-    if get_setting("paused", False) is True:
-        log("PAUSED from the app (Controls > Pause automation): no new videos this run")
-        return
-    goal = get_setting("goal_status", {}) or {}
-    if os.environ.get("GITHUB_EVENT_NAME") == "schedule" and goal.get("mode") == "watch" and (args.long, args.shorts) == (0, 1):
-        args.long, args.shorts = 1, 0  # watch hours behind target: the single-Short slot becomes a long video
-        log("goal strategy 'watch': this run makes a long video instead of a Short")
+UPLOAD_CAP = 6  # per Google project per rolling day (10,000 quota units / 1,600 per upload, minus room for extras)
 
+
+def uploads_24h(lang):
+    """Uploads in the last 24 h for this language = this language's Google project usage (EN -> 1, HI -> 2)."""
+    if not sb_on():
+        return 0
+    since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return len(sb_rest("GET", f"videos?select=id&youtube_id=not.is.null&lang=eq.{lang}&created_at=gte.{since}"))
+
+
+def plan_breaking(trends, niche, used):
+    """Only when something BIG broke in the last few hours (several outlets, big brand, huge search interest)
+    and the channel has not covered it: one fast Short. Otherwise nothing."""
+    pick = llm_json(f"""You watch tech news for a YouTube channel ({niche}). Trending items right now:
+{trends_text(trends)}
+
+Already covered (do not repeat): {json.dumps(used[-40:], ensure_ascii=False)}
+{SAFE_TOPICS}
+
+Is there BREAKING tech news from roughly the last 6 hours that is genuinely big: a major launch, outage, acquisition,
+leak or announcement from a huge brand, reported by several outlets, that millions will search for today?
+Be strict: most of the time the answer is no.
+Return JSON only: {{"breaking": false}} or
+{{"breaking": true, "topic": "short name", "search_query": "3-6 word news search query", "angle": "why it matters now"}}""",
+                    required=("breaking",))
+    if not pick.get("breaking") or not pick.get("topic"):
+        log("breaking: nothing big enough right now")
+        return []
+    ctx = story_context(pick.get("search_query") or pick["topic"])
+    if len(ctx) < 3:  # not confirmed by enough outlets yet
+        log(f"breaking: '{pick['topic']}' has only {len(ctx)} sources, skipping")
+        return []
+    log(f"breaking: '{pick['topic']}' ({len(ctx)} sources)")
+    kw = keyword_research(pick.get("search_query") or pick["topic"])
+    meta = fact_check(write_short({**pick, "angle": pick.get("angle", "") + ". This is BREAKING news from the last few "
+                                   "hours: open with what just happened."}, ctx, kw, "quick"), ctx, "short")
+    meta.update({"variant": "breaking", "sources": sorted({c["source"] for c in ctx if c["source"]})[:8],
+                 "search_suggestions": kw})
+    return [("short", meta)]
+
+
+def run_breaking(args):
+    global LANG
+    for lang in LANGS:
+        LANG = lang
+        done = uploads_24h(lang)
+        if done >= UPLOAD_CAP:
+            log(f"breaking [{lang}]: daily upload room used ({done}/{UPLOAD_CAP}), skipping")
+            continue
+        try:
+            run_videos(args, plan_breaking, "breaking news Short")
+        except Exception as e:
+            log(f"breaking [{lang}] failed: {str(e)[:200]}")
+
+
+def run_videos(args, planner, note):
+    """Plan -> make -> upload -> record. `planner(trends, niche, used)` returns [(kind, meta)]; [] = skip."""
+    global PROJECT
+    PROJECT = 2 if LANG == "hi" and project2_available() else 1  # Hindi uploads use the second project's quota
+    history = json.loads(HISTORY.read_text(encoding="utf-8")) if HISTORY.exists() else []
+    used = used_topics()
+    niche = os.environ.get("NICHE", "technology and AI")
+    log(f"Fetching trends ({L()['name']}, {L()['geo']})")
+    trends = fetch_trends(L()["geo"])
+    if not trends:
+        raise RuntimeError("No trends from any source")
+    log(f"Planning: {note} (uploads via Google Cloud project {PROJECT})")
+    jobs = planner(trends, niche, used)
+    if not jobs:
+        log("nothing to make this run")
+        return 0
     run_id = None
     if sb_on():
-        run_id = sb_rest("POST", "runs", json={"lang": LANG, "note": f"{args.long} long + {args.shorts} Shorts"})[0]["id"]
+        run_id = sb_rest("POST", "runs", json={"lang": LANG, "note": note})[0]["id"]
     counts = {"made": 0, "published": 0, "held": 0, "failed": 0}
 
     def finish_run(note=None):
@@ -1803,26 +1895,9 @@ def main():
                 **counts, "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 **({"note": note} if note else {})})
 
-    history = json.loads(HISTORY.read_text(encoding="utf-8")) if HISTORY.exists() else []
-    used = used_topics()
-    niche = os.environ.get("NICHE", "technology and AI")
     run_dir = OUT / f"{datetime.datetime.now():%Y-%m-%d_%H%M}_{LANG}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    log(f"Fetching trends ({L()['name']}, {L()['geo']})")
-    trends = fetch_trends(L()["geo"])
-    if not trends:
-        finish_run("no trends from any source")
-        raise RuntimeError("No trends from any source")
-
-    if LANG == "hi" and project2_available():
-        PROJECT = 2  # Hindi uploads use the second project's daily quota
-    log(f"Picking stories: {args.long} long, {args.shorts} Shorts (uploads via Google Cloud project {PROJECT})")
-    weekly = args.weekly or datetime.datetime.now(datetime.timezone.utc).weekday() == 6  # Sunday = weekly Top 10
-    jobs = plan_videos(trends, niche, used, args.long, args.shorts, weekly=weekly)
-    if not jobs:
-        finish_run("no scripts written (AI models unavailable)")
-        raise SystemExit("no scripts written")
 
     failures = 0
     for i, (kind, meta) in enumerate(jobs):
@@ -1869,6 +1944,64 @@ def main():
             counts["failed"] += 1
             log(f"[{kind}] FAILED: {e}")
     finish_run()
+    return failures
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--long", type=int, help="number of long videos (0 or 1, default 1)")
+    ap.add_argument("--shorts", type=int, help="number of Shorts (default 1)")
+    ap.add_argument("--no-upload", action="store_true")
+    ap.add_argument("--auth", action="store_true")
+    ap.add_argument("--lang", choices=sorted(LANGS), default="en", help="video language (en or hi)")
+    ap.add_argument("--upload-dir", help="upload an already-rendered video folder")
+    ap.add_argument("--publish-pending", action="store_true", help="make app-approved videos public")
+    ap.add_argument("--stats", action="store_true", help="refresh YouTube stats in Supabase")
+    ap.add_argument("--cleanup", action="store_true", help=f"delete Supabase records/files older than {KEEP_DAYS} days")
+    ap.add_argument("--reply-comments", action="store_true", help="reply to new viewer comments (max 5 per run)")
+    ap.add_argument("--process-requests", action="store_true", help="start runs requested from the app")
+    ap.add_argument("--weekly", action="store_true", help="make the long video the weekly Top 10 (default: Sundays)")
+    ap.add_argument("--breaking", action="store_true", help="check for big breaking news; make a Short if found")
+    ap.add_argument("--project", type=int, choices=(1, 2), default=1, help="with --auth: which Google Cloud project to log in")
+    args = ap.parse_args()
+    load_env()
+    global LANG, PROJECT
+    LANG = args.lang
+    if args.auth:
+        PROJECT = args.project
+        youtube_client()
+        log(f"YouTube auth OK, {token_file()[0].name} saved")
+        return
+    if args.upload_dir:
+        upload_existing(args.upload_dir)
+        return
+    maintenance = [f for flag, f in ((args.publish_pending, publish_pending), (args.stats, update_stats),
+                                     (args.cleanup, cleanup), (args.reply_comments, reply_comments),
+                                     (args.process_requests, process_requests)) if flag]
+    for f in maintenance:
+        try:  # maintenance must never block making today's videos
+            f()
+        except Exception as e:
+            log(f"{f.__name__} failed: {str(e)[:200]}")
+    if args.breaking:
+        if get_setting("paused", False) is not True:
+            run_breaking(args)
+        return
+    if maintenance and args.long is None and args.shorts is None:
+        return
+    args.long = 1 if args.long is None else args.long
+    args.shorts = 1 if args.shorts is None else args.shorts
+    if get_setting("paused", False) is True:
+        log("PAUSED from the app (Controls > Pause automation): no new videos this run")
+        return
+    goal = get_setting("goal_status", {}) or {}
+    if os.environ.get("GITHUB_EVENT_NAME") == "schedule" and goal.get("mode") == "watch" and (args.long, args.shorts) == (0, 1):
+        args.long, args.shorts = 1, 0  # watch hours behind target: the single-Short slot becomes a long video
+        log("goal strategy 'watch': this run makes a long video instead of a Short")
+
+    weekly = args.weekly or datetime.datetime.now(datetime.timezone.utc).weekday() == 6  # Sunday = weekly Top 10
+    failures = run_videos(args, lambda tr, niche, used: plan_videos(tr, niche, used, args.long, args.shorts, weekly=weekly),
+                          f"{args.long} long + {args.shorts} Shorts")
     if failures:
         raise SystemExit(f"{failures} video(s) failed")
 

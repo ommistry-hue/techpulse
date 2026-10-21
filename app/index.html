@@ -216,10 +216,10 @@ const S = { videos: [], insights: [], stats: [], runs: [], settings: {}, request
 // Mirrors the cloud schedule (.github/workflows/factory.yml) and the daily themes in autotube.py.
 const SCHEDULE = [
   { utc: [1, 33], lang: "hi", what: "1 Short" },
-  { utc: [7, 47], lang: "hi", what: "2 Shorts" },
+  { utc: [7, 47], lang: "hi", what: "1 Short" },
   { utc: [12, 17], lang: "en", what: "1 long video + 1 Short" },
   { utc: [13, 37], lang: "hi", what: "1 long video + 1 Short" },
-  { utc: [16, 43], lang: "en", what: "2 Shorts" },
+  { utc: [16, 43], lang: "en", what: "1 Short" },
   { utc: [21, 23], lang: "en", what: "1 Short" },
 ];
 const DAY_FOCUS = {
@@ -515,6 +515,7 @@ function renderAuto() {
       <li>Writes the script, title, description and tags from real YouTube search phrases.</li>
       <li>Fact and safety check: fixes unsupported claims; holds back risky or unsupported stories.</li>
       <li>Voice and presenters: long videos are a Max + Nova conversation, Shorts have one host (alternating). Lip sync, real photos with camera moves, fact and data cards, music and sound effects.</li>
+      <li>Every 3 hours: a breaking-news check. Only when something big just broke (several outlets, a huge brand) it makes a fast Short.</li>
       <li>Sundays: the long video becomes a 10-12 minute "Top 10 tech stories of the week" countdown.</li>
       <li>Uploads, adds the thumbnail, a question comment and the language playlist.</li>
       <li>Replies to up to 5 genuine comments, updates stats and checks channel health.</li>
