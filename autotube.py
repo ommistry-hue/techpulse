@@ -50,11 +50,11 @@ LANGS = {
     "hi": {"name": "Hindi", "geo": "IN", "news": "hl=en-IN&gl=IN&ceid=IN:en", "suggest_hl": "hi",
            "voices": {"male": "hi-IN-MadhurNeural", "female": "hi-IN-SwaraNeural"},
            "lipsync": "phonetic",  # Rhubarb's English recognizer does not know Hindi; phonetic mode is language-neutral
-           "ui": {"news": "टेक न्यूज़", "fact": "तथ्य", "subscribe": "SUBSCRIBE"},
-           "text": {"in_video": "इस वीडियो में:", "sources": "Sources",
-                    "subscribe": "रोज़ की Tech और AI news के लिए {c} को Subscribe करें।",
-                    "more_short": "पूरी कहानी हमारे channel पर देखें।", "more_long": "छोटे updates हमारे Shorts में देखें।",
-                    "ai": "Voice और visuals AI की मदद से बनाए गए हैं। Facts ऊपर दिए गए sources पर आधारित हैं।",
+           "ui": {"news": "à¤Ÿà¥‡à¤• à¤¨à¥à¤¯à¥‚à¤œà¤¼", "fact": "à¤¤à¤¥à¥à¤¯", "subscribe": "SUBSCRIBE"},
+           "text": {"in_video": "à¤‡à¤¸ à¤µà¥€à¤¡à¤¿à¤¯à¥‹ à¤®à¥‡à¤‚:", "sources": "Sources",
+                    "subscribe": "à¤°à¥‹à¤œà¤¼ à¤•à¥€ Tech à¤”à¤° AI news à¤•à¥‡ à¤²à¤¿à¤ {c} à¤•à¥‹ Subscribe à¤•à¤°à¥‡à¤‚à¥¤",
+                    "more_short": "à¤ªà¥‚à¤°à¥€ à¤•à¤¹à¤¾à¤¨à¥€ à¤¹à¤®à¤¾à¤°à¥‡ channel à¤ªà¤° à¤¦à¥‡à¤–à¥‡à¤‚à¥¤", "more_long": "à¤›à¥‹à¤Ÿà¥‡ updates à¤¹à¤®à¤¾à¤°à¥‡ Shorts à¤®à¥‡à¤‚ à¤¦à¥‡à¤–à¥‡à¤‚à¥¤",
+                    "ai": "Voice à¤”à¤° visuals AI à¤•à¥€ à¤®à¤¦à¤¦ à¤¸à¥‡ à¤¬à¤¨à¤¾à¤ à¤—à¤ à¤¹à¥ˆà¤‚à¥¤ Facts à¤Šà¤ªà¤° à¤¦à¤¿à¤ à¤—à¤ sources à¤ªà¤° à¤†à¤§à¤¾à¤°à¤¿à¤¤ à¤¹à¥ˆà¤‚à¥¤",
                     "credits": "Image credits (Wikimedia Commons / stock):"},
            "style": ("Conversational Hindi in Devanagari script, the way popular Indian tech YouTubers speak: keep product"
                      " names and everyday tech words (AI, app, phone, launch, update, chip, feature, price) in English"
@@ -166,7 +166,7 @@ def trends_text(trends):
 
 
 # ---------- 2. Scripts (LLM with automatic provider fallback) ----------
-LLM_TIMEOUT = 200
+LLM_TIMEOUT = 120
 
 
 def parse_json(text):
@@ -1080,7 +1080,7 @@ def after_upload(vid, thumb=None, comment=None):
 
 
 PLAYLISTS = {"en": ("TechPulse: Daily Tech & AI News (English)", "Every TechPulse tech and AI news video in English."),
-             "hi": ("TechPulse Hindi: टेक और AI न्यूज़ हिंदी में", "TechPulse के सभी Hindi tech और AI news videos.")}
+             "hi": ("TechPulse Hindi: à¤Ÿà¥‡à¤• à¤”à¤° AI à¤¨à¥à¤¯à¥‚à¤œà¤¼ à¤¹à¤¿à¤‚à¤¦à¥€ à¤®à¥‡à¤‚", "TechPulse à¤•à¥‡ à¤¸à¤­à¥€ Hindi tech à¤”à¤° AI news videos.")}
 
 
 def add_to_playlist(vid):
@@ -1094,8 +1094,15 @@ def add_to_playlist(vid):
             pid = yt.playlists().insert(part="snippet,status", body={
                 "snippet": {"title": title, "description": desc, "defaultLanguage": LANG},
                 "status": {"privacyStatus": "public"}}).execute()["id"]
-        yt.playlistItems().insert(part="snippet", body={"snippet": {
-            "playlistId": pid, "position": 0, "resourceId": {"kind": "youtube#video", "videoId": vid}}}).execute()
+        for attempt in range(4):  # 409 right after a playlist or video is created = not ready yet; wait and retry
+            try:
+                yt.playlistItems().insert(part="snippet", body={"snippet": {
+                    "playlistId": pid, "position": 0, "resourceId": {"kind": "youtube#video", "videoId": vid}}}).execute()
+                break
+            except Exception as e:
+                if "409" not in str(e) or attempt == 3:
+                    raise
+                time.sleep(15 * (attempt + 1))
         log("  added to playlist")
     except Exception as e:
         log(f"  playlist skipped: {str(e)[:120]}")
