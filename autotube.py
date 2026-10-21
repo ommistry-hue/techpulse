@@ -1492,9 +1492,10 @@ def reply_comments(limit=3, force=False):
     """Reply like a person who runs the channel: only genuine comments, a random share of them, after a natural
     delay, a few per run, capped per day. Every comment is decided once (replied or skipped) and remembered."""
     now = datetime.datetime.now(datetime.timezone.utc)
-    if not force and now.minute >= 10:
-        return  # publish checks run every 10 min: look at comments about once an hour
     state = get_setting("comment_replies", {}) or {}
+    last = state.get("checked")
+    if not force and last and now - datetime.datetime.fromisoformat(last) < datetime.timedelta(minutes=55):
+        return  # publish checks run every 10 min: look at comments about once an hour
     today = str(datetime.date.today())
     sent_today = state.get("count", 0) if state.get("date") == today else 0
     decided = state.get("decided", [])
@@ -1518,6 +1519,8 @@ def reply_comments(limit=3, force=False):
                 continue
             cands.append({"id": t["id"], "video": v["title"], "lang": v["lang"], "text": top["textDisplay"][:400]})
     if not cands:
+        sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates",
+                json={"key": "comment_replies", "value": {**state, "checked": now.isoformat()}})
         return
     cands = cands[:15]
     res = llm_json(f"""You run the YouTube channel {CHANNEL()} (tech & AI news) and you are answering comments yourself.
@@ -1556,7 +1559,7 @@ Return JSON only: {{"replies": [{{"id": "comment thread id", "valid": true, "que
         except Exception as e:
             log(f"  reply failed: {str(e)[:100]}")
     # Valid comments not picked this time stay decided (skipped), so the pick stays random instead of eventually all.
-    value = {"date": today, "count": sent_today + sent, "decided": decided[-500:]}
+    value = {"date": today, "count": sent_today + sent, "decided": decided[-500:], "checked": now.isoformat()}
     sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates",
             json={"key": "comment_replies", "value": value})
     log(f"comments: {len(cands)} new, {len(picks)} picked, {sent} replied ({sent_today + sent}/{REPLY_DAILY_CAP} today)")

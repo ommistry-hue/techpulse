@@ -3,15 +3,11 @@ name: Factory (make + upload videos)
 # YouTube API quota is 10,000 units/day per Google project; one upload costs 1,600.
 # Two projects: English uploads use project 1, Hindi uploads project 2 -> 4 scheduled uploads each per day,
 # leaving 2 per project for breaking news (the cap is checked before every breaking upload).
+# Started by the Clock workflow (tools/clock.py) on a fixed UTC plan, because GitHub drops many cron runs:
+#   EN 12:17 (1 long + 1 Short), 16:43, 21:23 (1 Short each) | HI 01:33, 07:47 (1 Short each), 13:37 (1 long + 1 Short)
+#   Breaking-news check every 3 hours at :29 (a Short only when something big just broke)
+run-name: Factory ${{ inputs.slot || 'manual' }}
 on:
-  schedule:
-    - cron: "17 12 * * *"   # English: 1 long + 1 Short  (US morning)
-    - cron: "43 16 * * *"   # English: 1 Short           (US midday)
-    - cron: "23 21 * * *"   # English: 1 Short           (US afternoon)
-    - cron: "33 1 * * *"    # Hindi:   1 Short           (India 7 AM)
-    - cron: "47 7 * * *"    # Hindi:   1 Short           (India 1 PM)
-    - cron: "29 */3 * * *"  # Breaking news check (both languages): a Short only when something big just broke
-    - cron: "37 13 * * *"   # Hindi:   1 long + 1 Short  (India 7 PM)
   workflow_dispatch:
     inputs:
       lang:
@@ -26,6 +22,12 @@ on:
       upload:
         description: "Upload to YouTube (no = test render only, saves the daily upload limit)"
         default: "yes"
+      mode:
+        description: "normal or breaking (breaking-news check)"
+        default: "normal"
+      slot:
+        description: "Set by the Clock (names the run so a slot never runs twice)"
+        default: ""
 
 concurrency:
   group: factory
@@ -107,22 +109,14 @@ jobs:
       - name: Decide language and how many videos
         id: plan
         env:
-          SCHEDULE: ${{ github.event.schedule }}
+          IN_MODE: ${{ inputs.mode }}
           IN_LANG: ${{ inputs.lang }}
           IN_LONG: ${{ inputs.long }}
           IN_SHORTS: ${{ inputs.shorts }}
           IN_UPLOAD: ${{ inputs.upload }}
         run: |
-          case "$SCHEDULE" in
-            "17 12 * * *") G=en; L=1; S=1 ;;
-            "43 16 * * *") G=en; L=0; S=1 ;;
-            "23 21 * * *") G=en; L=0; S=1 ;;
-            "33 1 * * *")  G=hi; L=0; S=1 ;;
-            "47 7 * * *")  G=hi; L=0; S=1 ;;
-            "29 */3 * * *") echo "args=--breaking" >> "$GITHUB_OUTPUT"; exit 0 ;;
-            "37 13 * * *") G=hi; L=1; S=1 ;;
-            *) G="${IN_LANG:-en}"; L="${IN_LONG:-1}"; S="${IN_SHORTS:-1}" ;;
-          esac
+          if [ "$IN_MODE" = "breaking" ]; then echo "args=--breaking" >> "$GITHUB_OUTPUT"; exit 0; fi
+          G="${IN_LANG:-en}"; L="${IN_LONG:-1}"; S="${IN_SHORTS:-1}"
           [[ "$G" =~ ^(en|hi)$ && "$L" =~ ^[01]$ && "$S" =~ ^[0-4]$ ]] || { echo "bad input"; exit 1; }
           EXTRA=""; [ "${IN_UPLOAD:-yes}" = "no" ] && EXTRA="--no-upload"
           echo "args=--lang $G --long $L --shorts $S $EXTRA" >> "$GITHUB_OUTPUT"
