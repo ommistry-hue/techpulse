@@ -76,4 +76,4 @@ jobs:
           [[ "$L" =~ ^[01]$ && "$S" =~ ^[0-4]$ ]] || { echo "bad input"; exit 1; }
           echo "args=--long $L --shorts $S" >> "$GITHUB_OUTPUT"
       - name: Make and upload
-        run: python -u autotube.py ${{ steps.plan.outputs.args }} --stats --cleanup
+        run: python -u autotube.py ${{ steps.plan.outputs.args }} --publish-pending --stats --cleanup
