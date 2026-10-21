@@ -2090,6 +2090,47 @@ def cleanup():
         sb_rest("DELETE", f"videos?created_at=lt.{cutoff}")
     sb_rest("DELETE", f"insights?created_at=lt.{days_ago(180)}")
     log(f"cleanup: removed {len(old)} records older than {KEEP_DAYS} days (YouTube videos are kept)")
+    storage_cap()
+
+
+STORAGE_CAP_MB, STORAGE_TARGET_MB = 800, 650  # free plan has 1 GB of file storage
+
+
+def storage_files():
+    """{path: bytes} of every file in the bucket (paths are day/video/file.ext)."""
+    def ls(prefix):
+        r = requests.post(f"{os.environ['SUPABASE_URL'].rstrip('/')}/storage/v1/object/list/{BUCKET}",
+                          headers=sb_headers({"Content-Type": "application/json"}), timeout=60,
+                          json={"prefix": prefix, "limit": 1000})
+        r.raise_for_status()
+        return r.json()
+    files = {}
+    def walk(prefix, depth):
+        for x in ls(prefix):
+            path = f"{prefix}/{x['name']}" if prefix else x["name"]
+            if x.get("id") is None and depth < 3:  # folder
+                walk(path, depth + 1)
+            elif x.get("metadata"):
+                files[path] = int(x["metadata"].get("size") or 0)
+    walk("", 0)
+    return files
+
+
+def storage_cap():
+    """Hard guard: if app previews ever exceed STORAGE_CAP_MB (e.g. many long weekly videos), delete the oldest
+    previews until under STORAGE_TARGET_MB. Records, thumbnails and the YouTube videos themselves stay."""
+    files = storage_files()
+    total = sum(files.values()) / 1048576
+    if total <= STORAGE_CAP_MB:
+        log(f"storage: {total:.0f} MB of 1 GB used")
+        return
+    for r in sb_rest("GET", "videos?select=id,preview_path&preview_path=not.is.null&order=created_at.asc"):
+        if total <= STORAGE_TARGET_MB:
+            break
+        sb_remove([r["preview_path"]])
+        sb_rest("PATCH", f"videos?id=eq.{r['id']}", json={"preview_path": None})
+        total -= files.get(r["preview_path"], 0) / 1048576
+    log(f"storage: over {STORAGE_CAP_MB} MB, oldest previews removed -> {total:.0f} MB")
 
 
 # ---------- main ----------

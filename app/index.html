@@ -279,7 +279,8 @@ async function loadAll() {
   S.videos = videos.data || []; S.insights = insights.data || []; S.stats = stats.data || [];
   S.runs = runs.data || []; S.requests = requests.data || [];
   S.settings = Object.fromEntries((settings.data || []).map(r => [r.key, r.value]));
-  const paths = S.videos.map(v => v.thumb_path).filter(Boolean);
+  if (Date.now() - (S.thumbsAt || 0) > 50 * 60000) { S.thumbs = {}; S.thumbsAt = Date.now(); }  // links last 1 h
+  const paths = S.videos.map(v => v.thumb_path).filter(p => p && !S.thumbs[p]);  // reuse links: auto-refresh doesn't re-download
   if (paths.length) {
     const { data: urls } = await db.storage.from("videos").createSignedUrls(paths, 3600);
     (urls || []).forEach(u => { if (u.signedUrl) S.thumbs[u.path] = u.signedUrl; });
