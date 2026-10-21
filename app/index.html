@@ -269,6 +269,25 @@ async function loadAll() {
 }
 
 // ---------- Home ----------
+function goalsPanel() {
+  const g = S.settings.goals || {}, st = S.settings.goal_status || {};
+  if (!g.subscribers) return "";
+  const row = (label, now, target, need, rate, proj, unit) => `<div class="progress"><div class="lbl"><span>${label}</span>
+      <span class="muted">${full(Math.round(now))} / ${full(target)}${unit}</span></div>
+    <div class="bar"><i style="width:${Math.min(100, now / target * 100)}%"></i></div>
+    <div class="muted" style="font-size:12.5px;margin-top:5px">Needed: <b style="color:var(--text)">+${need}${unit}/day</b> ·
+      now: +${rate}${unit}/day · on this pace: ${full(proj)}${unit}</div></div>`;
+  const chip = st.on_track ? '<span class="badge b-public">ON TRACK</span>' : '<span class="badge b-held">BEHIND</span>';
+  const mode = st.mode === "watch" ? "Watch time: deeper stories, extra long videos" : "Reach: broad, viral, shareable stories";
+  return `<div class="panel"><h2 style="display:flex;justify-content:space-between;align-items:center">Goal by
+      ${new Date(g.deadline).toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${st.updated ? chip : ""}</h2>
+    ${st.updated ? row("Subscribers", st.subscribers, g.subscribers, st.need_subs_per_day, st.rate_subs_per_day, st.projected_subs, "")
+      + row("Watch hours", st.watch_hours, g.watch_hours, st.need_hours_per_day, st.rate_hours_per_day, st.projected_hours, " h")
+      + `<p class="hint">${st.days_left} days left. Today's automatic strategy: <b>${mode}</b>.</p>`
+      : '<p class="hint">Progress appears after the next automatic run.</p>'}
+  </div>`;
+}
+
 function nextRuns() {
   const now = new Date(), out = [];
   for (let d = 0; d < 2; d++) for (const s of SCHEDULE) {
@@ -293,7 +312,7 @@ function renderHome() {
     <div class="bar" role="progressbar" aria-valuenow="${n}" aria-valuemax="${target}"><i style="width:${Math.min(100, n / target * 100)}%"></i></div></div>`;
   const runRow = r => `<tr><td>${when(r.started_at)}<div class="muted" style="font-size:12px">${esc(LANG_NAME[r.lang] || r.lang)} · ${esc(r.note || "")}</div></td>
     <td class="n">${r.finished_at ? `${r.made} made<br><span class="muted">${r.published} public${r.held ? `, ${r.held} held` : ""}${r.failed ? `, ${r.failed} failed` : ""}</span>` : `<span class="badge b-pending">RUNNING</span>`}</td></tr>`;
-  $("#tab-home").innerHTML = `${banner}
+  $("#tab-home").innerHTML = `${banner}${goalsPanel()}
     <div class="tiles">
       <div class="tile"><span>Subscribers</span><b>${full(last.subscribers)}</b>${d("subscribers")}</div>
       <div class="tile"><span>Total views</span><b>${num(last.views)}</b>${d("views")}</div>
@@ -458,6 +477,15 @@ function renderAuto() {
       <div class="switch"><div>Auto-publish<small>Off = new videos upload as private for you to review here.</small></div>
         <label class="toggle"><input type="checkbox" id="swPub" ${autopub ? "checked" : ""} aria-label="Auto-publish"><span></span></label></div>
     </div>
+    <div class="panel"><h2>Goals</h2>
+      <div class="form-row">
+        <label>Subscribers<input type="number" id="gSubs" min="1" value="${(S.settings.goals || {}).subscribers || 10000}" style="font:inherit;color:var(--text);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px;min-height:44px;width:100%"></label>
+        <label>Watch hours<input type="number" id="gHours" min="1" value="${(S.settings.goals || {}).watch_hours || 2000}" style="font:inherit;color:var(--text);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px;min-height:44px;width:100%"></label>
+        <label>By date<input type="date" id="gDate" value="${(S.settings.goals || {}).deadline || ""}" style="font:inherit;color:var(--text);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px;min-height:44px;width:100%"></label>
+      </div>
+      <div class="actions"><button class="btn" id="gSave">Save goals</button></div>
+      <p class="hint">Every day the automation compares progress with these goals and switches between more reach and more watch time.</p>
+    </div>
     <div class="panel"><h2>Make videos now</h2>
       <div class="form-row">
         <label>Language<select id="rqLang"><option value="en">English</option><option value="hi">Hindi</option></select></label>
@@ -500,6 +528,12 @@ $("#tab-auto").addEventListener("change", async e => {
   if (e.target.id === "swPub") { if (await setSetting("autopublish", e.target.checked)) toast(e.target.checked ? "Auto-publish on" : "New videos will stay private"); else e.target.checked = !e.target.checked; }
 });
 $("#tab-auto").addEventListener("click", async e => {
+  if (e.target.id === "gSave") {
+    const g = { subscribers: Math.max(1, +$("#gSubs").value || 10000), watch_hours: Math.max(1, +$("#gHours").value || 2000),
+                deadline: $("#gDate").value || (S.settings.goals || {}).deadline };
+    if (await setSetting("goals", g)) toast("Goals saved. The next run plans around them.");
+    return;
+  }
   if (e.target.id !== "rqGo") return;
   const body = { lang: $("#rqLang").value, long: +$("#rqLong").value, shorts: +$("#rqShorts").value };
   if (!body.long && !body.shorts) return toast("Pick at least one video");

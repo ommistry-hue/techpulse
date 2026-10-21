@@ -133,3 +133,11 @@ alter table public.insights add column if not exists avg_view_pct numeric;
 alter table public.insights add column if not exists avg_view_s numeric;
 alter table public.insights add column if not exists variant text;
 alter table public.channel_stats add column if not exists watch_hours numeric;
+-- Goals the automation works toward (editable in the app) + its daily status / strategy and retention lessons
+insert into public.settings (key, value) values
+  ('goals', '{"subscribers": 10000, "watch_hours": 2000, "deadline": "2026-11-21"}'),
+  ('goal_status', '{}'), ('retention_notes', '""')
+on conflict (key) do nothing;
+drop policy if exists "admins change settings" on public.settings;
+create policy "admins change settings" on public.settings for update to authenticated
+  using (public.is_app_admin()) with check (public.is_app_admin() and key in ('paused', 'autopublish', 'goals'));

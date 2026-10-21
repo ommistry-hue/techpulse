@@ -49,7 +49,7 @@ LANGS = {
                     "subscribe": "Subscribe to {c} for daily tech & AI news in minutes.",
                     "more_short": "Watch the full stories on our channel.", "more_long": "Quick versions in our Shorts.",
                     "ai": "Voice and visuals are AI-assisted. Facts are based on the sources listed above.",
-                    "credits": "Image credits (Wikimedia Commons / stock):"},
+                    "credits": "Image credits (Wikimedia Commons / stock):", "full_story": "▶ Full story:"},
            "style": "Natural spoken American English."},
     "hi": {"name": "Hindi", "geo": "IN", "news": "hl=en-IN&gl=IN&ceid=IN:en", "suggest_hl": "hi",
            "voices": {"male": "hi-IN-MadhurNeural", "female": "hi-IN-SwaraNeural"},
@@ -62,7 +62,7 @@ LANGS = {
                     "subscribe": "रोज़ की Tech और AI news के लिए {c} को Subscribe करें।",
                     "more_short": "पूरी कहानी हमारे channel पर देखें।", "more_long": "छोटे updates हमारे Shorts में देखें।",
                     "ai": "Voice और visuals AI की मदद से बनाए गए हैं। Facts ऊपर दिए गए sources पर आधारित हैं।",
-                    "credits": "Image credits (Wikimedia Commons / stock):"},
+                    "credits": "Image credits (Wikimedia Commons / stock):", "full_story": "▶ पूरी कहानी देखें:"},
            "style": ("Conversational Hindi in Devanagari script, the way popular Indian tech YouTubers speak: keep product"
                      " names and everyday tech words (AI, app, phone, launch, update, chip, feature, price) in English"
                      " using Latin letters. Simple words, friendly tone, like talking to a friend. Mention what it means"
@@ -322,6 +322,7 @@ def topic_rules(niche, used):
     return (f"Channel: {CHANNEL()}, niche: {niche or 'tech'}. {audience}\n"
             f"Today's preferred theme when stories are otherwise equal: {focus}.\n"
             f"{SAFE_TOPICS}\n"
+            f"{goal_focus()}\n"
             f"Pick stories that fit the niche, are fresh today, and have the biggest audience (high searches,"
             f" points, upvotes, views; covered by several sources = bigger). Prefer stories viewers will have strong"
             f" feelings about (big brands, money, privacy, jobs, AI, new gadgets).\n"
@@ -444,6 +445,7 @@ Count words carefully: total under {lo - 30} words is too short.
 {HOSTS_RULES}
 {CARD_RULES}
 {RULES}
+{retention_block()}
 {SEO_RULES}
 {lang_rules()}
 
@@ -537,6 +539,7 @@ the LAST sentence must flow naturally back into the first sentence so the Short 
 (looping replays boost Shorts). Just before that last sentence, in this order: one comment question, then exactly this
 short line: "{L()['follow_line']}"
 {RULES}
+{retention_block()}
 {SEO_RULES}
 {lang_rules()}
 For Shorts the title must be max 55 characters.
@@ -645,6 +648,9 @@ def plan_videos(trends, niche, used, n_long, n_shorts, weekly=False):
             log(f"[weekly] failed ({e}); making a normal long video instead")
             weekly = False
     longs, shorts = pick_topics(trends, niche, used, 0 if weekly else n_long, n_shorts)
+    if longs and shorts:  # funnel: the first Short teases the long video's story and sends viewers to it
+        shorts[0] = {**longs[0], "teaser": True, "angle": (longs[0].get("angle", "") + ". TEASER: give the single most "
+                     "surprising fact, then say the full story is in today's TechPulse video (linked below).")}
     for kind, picks, writer in (("long", longs, write_long), ("short", shorts, write_short)):
         for i, p in enumerate(picks):
             try:
@@ -1193,12 +1199,28 @@ def clean_tags(meta, limit=480):
     return out
 
 
+LATEST_LONG = {}
+
+
+def latest_long_url():
+    """Newest public long video in this language (this run's, else the last 3 days) for the Shorts -> long funnel."""
+    if LATEST_LONG.get(LANG):
+        return LATEST_LONG[LANG]
+    if not sb_on():
+        return None
+    rows = sb_rest("GET", f"videos?select=youtube_id&kind=eq.long&lang=eq.{LANG}&privacy=eq.public"
+                          f"&created_at=gte.{days_ago(3)}&order=created_at.desc&limit=1")
+    return f"https://youtu.be/{rows[0]['youtube_id']}" if rows else None
+
+
 def description(meta, short, topic, credits, chapter_list=()):
     """Search-friendly layout: keyword sentence first (shown in search), summary, chapters, sources, hashtags."""
     channel = os.environ.get("CHANNEL_NAME", "TechPulse")
     tx = L()["text"]
     first = meta.get("description_hook") or meta.get("description", "")
     parts = [first.strip()]
+    if meta.get("related_url"):
+        parts.append(f"{tx['full_story']} {meta['related_url']}")
     if meta.get("summary"):
         parts.append(meta["summary"].strip())
     if meta.get("key_points") and not short:
@@ -1519,6 +1541,10 @@ def update_stats():
         update_analytics(ids)
     except Exception as e:
         log(f"analytics skipped: {str(e)[:160]}")
+    try:
+        update_goals()
+    except Exception as e:
+        log(f"goals skipped: {str(e)[:160]}")
     channel_health()
 
 
@@ -1543,6 +1569,8 @@ def update_analytics(ids):
     hours = round((total[0][0] if total else 0) / 60, 1)
     sb_rest("PATCH", f"channel_stats?day=eq.{datetime.datetime.now(datetime.timezone.utc).date()}", json={"watch_hours": hours})
     log(f"analytics: {hours} watch hours in the last 365 days")
+    recent = sb_rest("GET", f"insights?select=youtube_id,kind&views=gte.15&created_at=gte.{days_ago(30)}&order=created_at.desc")
+    retention_lessons(ya, recent)
 
 
 def save_channel_stats():
@@ -1584,6 +1612,85 @@ def process_requests():
                 uploads += want
         sb_rest("PATCH", f"run_requests?id=eq.{req['id']}", json={"status": status})
         log(f"run request {req['id']} ({req['lang']} {req['long']}L+{req['shorts']}S): {status}")
+
+
+def update_goals():
+    """Compare progress with the targets set in the app (default 10,000 subscribers and 2,000 watch hours by the
+    deadline), work out today's required pace, project the result from the last 7 days, and pick a strategy:
+    'reach' (subscribers behind -> broad, viral, shareable stories) or 'watch' (hours behind -> depth, more long)."""
+    goals = get_setting("goals", {"subscribers": 10000, "watch_hours": 2000, "deadline": "2026-11-21"})
+    rows = sb_rest("GET", "channel_stats?select=day,subscribers,watch_hours&order=day.asc")
+    if not rows:
+        return
+    last = rows[-1]
+    today = datetime.date.fromisoformat(last["day"])
+    base = next((r for r in reversed(rows) if datetime.date.fromisoformat(r["day"]) <= today - datetime.timedelta(days=7)),
+                rows[0])
+    span = max(1, (today - datetime.date.fromisoformat(base["day"])).days)
+    hours, base_hours = last.get("watch_hours") or 0, base.get("watch_hours") or 0
+    rate_s, rate_h = (last["subscribers"] - base["subscribers"]) / span, (hours - base_hours) / span
+    days_left = max(1, (datetime.date.fromisoformat(goals["deadline"]) - today).days)
+    proj_s, proj_h = last["subscribers"] + rate_s * days_left, hours + rate_h * days_left
+    ratio_s, ratio_h = proj_s / goals["subscribers"], proj_h / goals["watch_hours"]
+    mode = "watch" if ratio_h < ratio_s else "reach"
+    status = {
+        "updated": datetime.datetime.now(datetime.timezone.utc).isoformat(), "days_left": days_left, "mode": mode,
+        "subscribers": last["subscribers"], "watch_hours": hours,
+        "need_subs_per_day": round(max(0, goals["subscribers"] - last["subscribers"]) / days_left, 1),
+        "need_hours_per_day": round(max(0, goals["watch_hours"] - hours) / days_left, 1),
+        "rate_subs_per_day": round(rate_s, 1), "rate_hours_per_day": round(rate_h, 1),
+        "projected_subs": round(proj_s), "projected_hours": round(proj_h, 1),
+        "on_track": ratio_s >= 1 and ratio_h >= 1}
+    sb_rest("PATCH", "settings?key=eq.goal_status", json={"value": status})
+    log(f"goals: {last['subscribers']}/{goals['subscribers']} subs, {hours}/{goals['watch_hours']} h; need "
+        f"+{status['need_subs_per_day']} subs and +{status['need_hours_per_day']} h per day; strategy: {mode}")
+
+
+def retention_block():
+    notes = get_setting("retention_notes", "") or ""
+    return f"RETENTION DATA FROM THIS CHANNEL (write to fix these weak spots): {notes}" if notes else ""
+
+
+def goal_focus():
+    """One line for the story picker: what today's strategy needs."""
+    st = get_setting("goal_status", {}) or {}
+    if st.get("mode") == "watch":
+        return ("TODAY'S CHANNEL GOAL: more watch time. Prefer stories with real depth that hold attention for minutes "
+                "(big launches, major changes people want explained).")
+    return ("TODAY'S CHANNEL GOAL: more subscribers and reach. Prefer the most broadly appealing, surprising and shareable "
+            "stories (huge brands, things everyone uses, 'wait, really?' moments).")
+
+
+def retention_lessons(ya, rows):
+    """Where viewers leave: audience retention curves of recent videos -> short lessons fed to the script writer."""
+    curves = {"short": [], "long": []}
+    for r in rows[:12]:
+        try:
+            pts = ya.reports().query(ids="channel==MINE", startDate="2020-01-01", endDate=str(datetime.date.today()),
+                                     metrics="audienceWatchRatio", dimensions="elapsedVideoTimeRatio",
+                                     filters=f"video=={r['youtube_id']}").execute().get("rows", [])
+        except Exception:
+            continue
+        if len(pts) >= 10:
+            curves[r["kind"] if r["kind"] in curves else "long"].append(pts)
+    notes = []
+    for kind, cs in curves.items():
+        if not cs:
+            continue
+        at = lambda c, x: min(c, key=lambda p: abs(p[0] - x))[1]
+        avg = lambda x: sum(at(c, x) for c in cs) / len(cs)
+        drops = []
+        for c in cs:
+            d = max(range(1, len(c)), key=lambda i: c[i - 1][1] - c[i][1])
+            drops.append(c[d][0])
+        worst = sum(drops) / len(drops)
+        notes.append(f"{kind.title()} videos ({len(cs)} measured): still watching at 10% = {avg(0.1):.0%}, at 50% = "
+                     f"{avg(0.5):.0%}, at 90% = {avg(0.9):.0%}; the biggest drop is usually around {worst:.0%} of the video.")
+    if notes:
+        notes.append("Fix: make the first 2 seconds stronger, put a new surprising fact right before the usual drop "
+                     "point, and keep every sentence moving the story forward.")
+        sb_rest("PATCH", "settings?key=eq.retention_notes", json={"value": " ".join(notes)})
+        log("retention lessons: " + " | ".join(notes[:-1]))
 
 
 def channel_health():
@@ -1669,6 +1776,10 @@ def main():
     if get_setting("paused", False) is True:
         log("PAUSED from the app (Controls > Pause automation): no new videos this run")
         return
+    goal = get_setting("goal_status", {}) or {}
+    if os.environ.get("GITHUB_EVENT_NAME") == "schedule" and goal.get("mode") == "watch" and (args.long, args.shorts) == (0, 1):
+        args.long, args.shorts = 1, 0  # watch hours behind target: the single-Short slot becomes a long video
+        log("goal strategy 'watch': this run makes a long video instead of a Short")
 
     run_id = None
     if sb_on():
@@ -1711,6 +1822,8 @@ def main():
             meta["host"] = host
             r = make_video(work, kind, meta, host)
             meta["music_credit"] = r["music_credit"]
+            if kind == "short":
+                meta["related_url"] = latest_long_url()
             desc = description(meta, kind == "short", meta["topic"], r["credits"], r["chapters"])
             (work / "description.txt").write_text(desc, encoding="utf-8")
             thumb = make_thumbnail(work, meta.get("thumbnail_text") or meta["topic"], r["duration"] * 0.25,
@@ -1724,7 +1837,12 @@ def main():
                 vid = upload(r["video"], meta["title"], desc, clean_tags(meta), kind == "short", privacy)
                 log(f"[{kind}] uploaded https://youtu.be/{vid} ({privacy}{', held by fact-check' if meta.get('hold') else ''})")
                 # YouTube rejects comments on private videos; publish_pending() posts it once public.
-                after_upload(vid, thumb, meta.get("pinned_comment") if privacy == "public" else None)
+                comment = meta.get("pinned_comment")
+                if comment and meta.get("related_url"):
+                    comment += f"\n\n{L()['text']['full_story']} {meta['related_url']}"
+                after_upload(vid, thumb, comment if privacy == "public" else None)
+                if kind == "long" and privacy == "public":
+                    LATEST_LONG[LANG] = f"https://youtu.be/{vid}"
                 add_to_playlist(vid)
                 entry["youtube_id"] = vid
             record(work, kind, meta, desc, r["duration"], vid, thumb)
