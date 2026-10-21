@@ -150,3 +150,6 @@ insert into public.settings (key, value) values ('affiliate', '{"us": "", "in": 
 drop policy if exists "admins change settings" on public.settings;
 create policy "admins change settings" on public.settings for update to authenticated
   using (public.is_app_admin()) with check (public.is_app_admin() and key in ('paused', 'autopublish', 'goals', 'affiliate'));
+
+-- Daily lessons the automation writes for itself (shown in the app's Insights tab)
+insert into public.settings (key, value) values ('learned_rules', '{}') on conflict (key) do nothing;

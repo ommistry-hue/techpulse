@@ -323,6 +323,7 @@ def topic_rules(niche, used):
             f"Today's preferred theme when stories are otherwise equal: {focus}.\n"
             f"{SAFE_TOPICS}\n"
             f"{goal_focus()}\n"
+            f"{learned_block()}\n"
             f"Pick stories that fit the niche, are fresh today, and have the biggest audience (high searches,"
             f" points, upvotes, views; covered by several sources = bigger). Prefer stories viewers will have strong"
             f" feelings about (big brands, money, privacy, jobs, AI, new gadgets).\n"
@@ -446,7 +447,9 @@ Count words carefully: total under {lo - 30} words is too short.
 {CARD_RULES}
 {RULES}
 {retention_block()}
+{learned_block()}
 {SEO_RULES}
+{market_block()}
 {lang_rules()}
 
 Return JSON only:
@@ -510,18 +513,17 @@ SHORT_VARIANTS = {"quick": (60, 80, "25-30 seconds"), "standard": (110, 140, "40
 
 
 def pick_short_variant(i):
-    """A/B test of Short length. Alternates until each length has 8+ videos with retention data in the last 30 days,
-    then uses the winner (by average % watched x views) 70% of the time and keeps testing with the rest."""
+    """A/B test of Short length. Alternates until each length has 4+ videos online for 6+ hours, then uses the winner
+    (views per hour, weighted by % watched when known) 70% of the time and keeps testing with the rest."""
     try:
-        rows = sb_rest("GET", f"insights?select=variant,views,avg_view_pct&kind=eq.short&lang=eq.{LANG}"
-                              f"&variant=not.is.null&created_at=gte.{days_ago(30)}") if sb_on() else []
+        rows = [r for r in scored_videos(LANG) if r["kind"] == "short" and r.get("variant")] if sb_on() else []
     except Exception:
         rows = []
     score = {}
     for v in SHORT_VARIANTS:
-        g = [r for r in rows if r["variant"] == v and r.get("avg_view_pct") is not None]
-        if len(g) >= 8:
-            score[v] = sum(r["avg_view_pct"] * (1 + r["views"]) ** 0.5 for r in g) / len(g)
+        g = [r for r in rows if r["variant"] == v]
+        if len(g) >= 4:
+            score[v] = sum(r["vph"] * ((r.get("avg_view_pct") or 50) / 50) for r in g) / len(g)
     if len(score) == len(SHORT_VARIANTS):
         best = max(score, key=score.get)
         return best if random.random() < 0.7 else min(score, key=score.get)
@@ -541,7 +543,9 @@ the LAST sentence must flow naturally back into the first sentence so the Short 
 short line: "{L()['follow_line']}"
 {RULES}
 {retention_block()}
+{learned_block()}
 {SEO_RULES}
+{market_block()}
 {lang_rules()}
 For Shorts the title must be max 55 characters.
 {CARD_RULES} (For a Short: "card" = at most one card, or null.)
@@ -1643,7 +1647,7 @@ def publish_pending():
         log("nothing to publish")
 
 
-def update_stats():
+def update_stats(full=True):
     """Refresh views/likes/comments for the last ~6 months (insights) and the app's 7-day list (videos).
     One channel for all languages, so one batched API call per 50 videos (1 quota unit each)."""
     since = days_ago(180)
@@ -1669,6 +1673,8 @@ def update_stats():
             sb_rest("PATCH", f"insights?youtube_id=eq.{v['id']}", json={
                 "views": st["viewCount"], "likes": st["likeCount"], "comments": st["commentCount"], "updated_at": now})
     log(f"stats updated for {len(ids)} videos")
+    if not full:  # quick refresh (publish checks): view counts only, feeds the views-per-hour learning
+        return
     save_channel_stats()
     try:
         update_analytics(ids)
@@ -1682,6 +1688,10 @@ def update_stats():
         optimize_titles()
     except Exception as e:
         log(f"titles skipped: {str(e)[:160]}")
+    try:
+        learn_rules()
+    except Exception as e:
+        log(f"learning skipped: {str(e)[:160]}")
     channel_health()
 
 
@@ -1886,18 +1896,98 @@ def channel_health():
         log("SAFETY: channel healthy")
 
 
+def views_per_hour(r):
+    """Early, fair signal: views divided by hours online (YouTube Analytics lags ~2 days; this works after hours)."""
+    age = (datetime.datetime.now(datetime.timezone.utc)
+           - datetime.datetime.fromisoformat(r["created_at"].replace("Z", "+00:00"))).total_seconds() / 3600
+    return r["views"] / max(1.0, age)
+
+
+def scored_videos(lang=None, days=30, min_hours=6):
+    """Recent videos (online >= min_hours) ranked by views per hour, with % watched when known."""
+    q = (f"insights?select=kind,lang,title,variant,views,likes,avg_view_pct,created_at&created_at=gte.{days_ago(days)}"
+         f"&created_at=lt.{(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=min_hours)).strftime('%Y-%m-%dT%H:%M:%SZ')}")
+    if lang:
+        q += f"&lang=eq.{lang}"
+    rows = sb_rest("GET", q)
+    for r in rows:
+        r["vph"] = round(views_per_hour(r), 2)
+    return sorted(rows, key=lambda r: -r["vph"])
+
+
 def performance_block():
     """What has worked on this channel for this language: fed to the story picker so it learns over time."""
     if not sb_on():
         return ""
-    rows = sb_rest("GET", f"insights?select=kind,title,views,likes,created_at&lang=eq.{LANG}&created_at=gte.{days_ago(60)}"
-                          f"&created_at=lt.{days_ago(2)}&order=views.desc")
+    rows = scored_videos(LANG)
     if len(rows) < 4:
         return ""
-    fmt = lambda r: f"- [{r['kind']}] {r['title']} - {r['views']} views, {r['likes']} likes"
-    return ("CHANNEL PERFORMANCE (learn from this; pick more stories like the winners, fewer like the losers):\n"
+    fmt = lambda r: (f"- [{r['kind']}] {r['title']} - {r['vph']} views/hour, {r['views']} views"
+                     + (f", {r['avg_view_pct']:.0f}% watched" if r.get("avg_view_pct") is not None else ""))
+    return ("CHANNEL PERFORMANCE, ranked by views per hour (pick more stories like the winners, fewer like the losers):\n"
             "Best:\n" + "\n".join(fmt(r) for r in rows[:8])
             + ("\nWorst:\n" + "\n".join(fmt(r) for r in rows[max(8, len(rows) - 5):]) if len(rows) > 8 else ""))
+
+
+_MARKET = {}
+
+
+def market_block():
+    """What is winning on ALL of YouTube right now in tech for this audience (1 quota unit, cached per run)."""
+    if LANG not in _MARKET:
+        try:
+            items = youtube_client().videos().list(part="snippet,statistics", chart="mostPopular", regionCode=L()["geo"],
+                                                   videoCategoryId="28", maxResults=15).execute().get("items", [])
+            _MARKET[LANG] = [f"- {v['snippet']['title']} ({int(v['statistics'].get('viewCount', 0)):,} views)" for v in items]
+        except Exception:
+            _MARKET[LANG] = []
+    if not _MARKET[LANG]:
+        return ""
+    return ("TOP TECH VIDEOS ON YOUTUBE RIGHT NOW in this market (learn their title style, hooks and topics; never copy):\n"
+            + "\n".join(_MARKET[LANG]))
+
+
+def learned_block():
+    lr = get_setting("learned_rules", {}) or {}
+    rules = lr.get("rules") or []
+    return ("LESSONS THIS CHANNEL HAS LEARNED (follow them):\n" + "\n".join(f"- {x}" for x in rules)) if rules else ""
+
+
+def learn_rules():
+    """Once a day: compare the best and worst videos (views/hour, % watched) plus what wins on YouTube now, and write
+    concrete rules every script and story pick then follows. This is the fast learning loop."""
+    lr = get_setting("learned_rules", {}) or {}
+    today = str(datetime.date.today())
+    if lr.get("date") == today:
+        return
+    rows = scored_videos(days=21)
+    if len(rows) < 6:
+        log("learning: not enough videos yet")
+        return
+    global LANG
+    current, market = LANG, []
+    for lang in LANGS:
+        LANG = lang
+        market.append(f"[{lang}] " + market_block())
+    LANG = current
+    line = lambda r: (f"[{r['lang']} {r['kind']}{'/' + r['variant'] if r.get('variant') else ''}] {r['title']} | "
+                      f"{r['vph']} views/h | {r['views']} views"
+                      + (f" | {r['avg_view_pct']:.0f}% watched" if r.get("avg_view_pct") is not None else ""))
+    res = llm_json(f"""You are the growth analyst of a YouTube tech news channel ({CHANNEL()}).
+Our videos, best first (views per hour since upload is the main score; % watched = retention):
+{chr(10).join(line(r) for r in rows[:40])}
+
+{chr(10).join(market)}
+
+Find what separates our winners from our losers (topics, brands, title wording, length/format, language) and what
+the market rewards right now. Write 6-8 SHORT, concrete, actionable rules for choosing stories and writing titles and
+scripts (e.g. "Titles naming Apple or Samsung get ~3x views/hour: put the brand first"). Only rules the data supports.
+The mix of long videos and Shorts is fixed by the channel goals (long videos earn the watch hours needed for
+monetization): never tell us to stop or reduce a format - instead give rules that make weak formats perform better.
+Return JSON only: {{"summary": "one sentence: the biggest lesson", "rules": ["...", "..."]}}""", required=("rules",))
+    value = {"date": today, "summary": res.get("summary", ""), "rules": [str(x) for x in res["rules"][:8]]}
+    sb_rest("PATCH", "settings?key=eq.learned_rules", json={"value": value})
+    log("learning: " + value["summary"])
 
 
 def cleanup():
@@ -2060,6 +2150,7 @@ def main():
     ap.add_argument("--upload-dir", help="upload an already-rendered video folder")
     ap.add_argument("--publish-pending", action="store_true", help="make app-approved videos public")
     ap.add_argument("--stats", action="store_true", help="refresh YouTube stats in Supabase")
+    ap.add_argument("--quick-stats", action="store_true", help="refresh view counts only (cheap, for frequent runs)")
     ap.add_argument("--cleanup", action="store_true", help=f"delete Supabase records/files older than {KEEP_DAYS} days")
     ap.add_argument("--reply-comments", action="store_true", help="reply to new viewer comments (max 5 per run)")
     ap.add_argument("--process-requests", action="store_true", help="start runs requested from the app")
@@ -2079,6 +2170,7 @@ def main():
         upload_existing(args.upload_dir)
         return
     maintenance = [f for flag, f in ((args.publish_pending, publish_pending), (args.stats, update_stats),
+                                     (args.quick_stats and not args.stats, lambda: update_stats(full=False)),
                                      (args.cleanup, cleanup), (args.reply_comments, reply_comments),
                                      (args.process_requests, process_requests)) if flag]
     for f in maintenance:

@@ -461,7 +461,9 @@ function renderInsights() {
     return { l, k, n: g.length, avg: g.length ? Math.round(g.reduce((a, b) => a + b.views, 0) / g.length) : 0 };
   });
   const best = groups.filter(g => g.n).sort((a, b) => b.avg - a.avg)[0];
-  const top = [...rows].sort((a, b) => b.views - a.views).slice(0, 15);
+  const vph = i => i.views / Math.max(1, (Date.now() - new Date(i.created_at)) / 3600000);
+  const top = [...rows].sort((a, b) => vph(b) - vph(a)).slice(0, 15);
+  const lr = S.settings.learned_rules || {};
   const totalViews = rows.reduce((a, b) => a + b.views, 0), totalLikes = rows.reduce((a, b) => a + b.likes, 0);
   $("#tab-insights").innerHTML = `
     <div class="chips">${[["all", "All"], ["en", "English"], ["hi", "Hindi"]].map(([k, l]) => `<button class="chip ${k === f ? "on" : ""}" data-if="${k}">${l}</button>`).join("")}</div>
@@ -470,18 +472,24 @@ function renderInsights() {
       <div class="tile"><span>Views</span><b>${num(totalViews)}</b></div>
       <div class="tile"><span>Likes</span><b>${num(totalLikes)}</b></div>
     </div>
+    <div class="panel"><h2>What the system learned</h2>
+      ${lr.rules && lr.rules.length ? `<p class="hint" style="margin-top:0"><b>${esc(lr.summary || "")}</b></p>
+        <ol class="steps">${lr.rules.map(r => `<li>${esc(r)}</li>`).join("")}</ol>
+        <p class="hint">Updated ${esc(lr.date)}. Every story pick and script follows these rules.</p>`
+        : '<p class="hint">The first lessons appear after the next daily stats run (it needs 6+ videos).</p>'}
+    </div>
     <div class="panel"><h2>Average views by format</h2>
       ${best ? `<p class="hint" style="margin:0 0 8px">Best so far: <b>${LANG_NAME[best.l]} ${best.k === "long" ? "long videos" : "Shorts"}</b>, ${full(best.avg)} views on average.</p>` : ""}
       <table><thead><tr><th>Format</th><th class="n">Videos</th><th class="n">Avg views</th></tr></thead><tbody>
       ${groups.map(g => `<tr><td>${LANG_NAME[g.l]} ${g.k === "long" ? "long" : "Shorts"}</td><td class="n">${g.n}</td><td class="n">${g.n ? full(g.avg) : "-"}</td></tr>`).join("")}
       </tbody></table></div>
-    <div class="panel"><h2>Top videos (last 6 months)</h2>
-      ${top.length ? `<table><thead><tr><th>Video</th><th class="n">Views</th><th class="n">% watched</th></tr></thead><tbody>
+    <div class="panel"><h2>Fastest-growing videos</h2>
+      ${top.length ? `<table><thead><tr><th>Video</th><th class="n">Views/h</th><th class="n">Views</th><th class="n">% watched</th></tr></thead><tbody>
       ${top.map(i => `<tr><td><a href="https://youtu.be/${esc(i.youtube_id)}" target="_blank" rel="noopener">${esc(i.title)}</a>
         <div class="muted" style="font-size:12px">${i.kind === "long" ? "Long" : "Short"} · ${(i.lang || "en").toUpperCase()} · ${new Date(i.created_at).toLocaleDateString()}${i.health ? ` · <span style="color:var(--danger)">${esc(i.health)}</span>` : ""}</div></td>
-        <td class="n">${full(i.views)}</td><td class="n">${i.avg_view_pct != null ? Math.round(i.avg_view_pct) + "%" : "-"}</td></tr>`).join("")}</tbody></table>`
+        <td class="n">${vph(i).toFixed(1)}</td><td class="n">${full(i.views)}</td><td class="n">${i.avg_view_pct != null ? Math.round(i.avg_view_pct) + "%" : "-"}</td></tr>`).join("")}</tbody></table>`
       : '<div class="hint">No data yet.</div>'}
-      <p class="hint">The story picker reads this same data before every run and makes more of what wins.</p></div>`;
+      <p class="hint">Ranked by views per hour since upload, a fair early signal. The story picker reads this data before every run.</p></div>`;
 }
 $("#tab-insights").addEventListener("click", e => { const c = e.target.closest("[data-if]"); if (c) { S.ifilter = c.dataset.if; renderInsights(); } });
 
