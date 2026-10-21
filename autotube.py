@@ -40,7 +40,9 @@ LANGS = {
     "en": {"name": "English", "geo": "US", "news": "hl=en-US&gl=US&ceid=US:en", "suggest_hl": "en",
            "voices": {"male": "en-US-AndrewMultilingualNeural", "female": "en-US-AvaMultilingualNeural"},
            "lipsync": "pocketSphinx",
-           "ui": {"news": "TECH NEWS", "fact": "FACT", "subscribe": "SUBSCRIBE"},
+           "ui": {"news": "TECH NEWS", "fact": "FACT", "subscribe": "SUBSCRIBE", "like": "LIKE", "comment": "COMMENT",
+                  "share": "SHARE"},
+           "follow_line": "Follow TechPulse for daily tech news.",
            "text": {"in_video": "In this video:", "sources": "Sources",
                     "subscribe": "Subscribe to {c} for daily tech & AI news in minutes.",
                     "more_short": "Watch the full stories on our channel.", "more_long": "Quick versions in our Shorts.",
@@ -50,11 +52,13 @@ LANGS = {
     "hi": {"name": "Hindi", "geo": "IN", "news": "hl=en-IN&gl=IN&ceid=IN:en", "suggest_hl": "hi",
            "voices": {"male": "hi-IN-MadhurNeural", "female": "hi-IN-SwaraNeural"},
            "lipsync": "phonetic",  # Rhubarb's English recognizer does not know Hindi; phonetic mode is language-neutral
-           "ui": {"news": "à¤Ÿà¥‡à¤• à¤¨à¥à¤¯à¥‚à¤œà¤¼", "fact": "à¤¤à¤¥à¥à¤¯", "subscribe": "SUBSCRIBE"},
-           "text": {"in_video": "à¤‡à¤¸ à¤µà¥€à¤¡à¤¿à¤¯à¥‹ à¤®à¥‡à¤‚:", "sources": "Sources",
-                    "subscribe": "à¤°à¥‹à¤œà¤¼ à¤•à¥€ Tech à¤”à¤° AI news à¤•à¥‡ à¤²à¤¿à¤ {c} à¤•à¥‹ Subscribe à¤•à¤°à¥‡à¤‚à¥¤",
-                    "more_short": "à¤ªà¥‚à¤°à¥€ à¤•à¤¹à¤¾à¤¨à¥€ à¤¹à¤®à¤¾à¤°à¥‡ channel à¤ªà¤° à¤¦à¥‡à¤–à¥‡à¤‚à¥¤", "more_long": "à¤›à¥‹à¤Ÿà¥‡ updates à¤¹à¤®à¤¾à¤°à¥‡ Shorts à¤®à¥‡à¤‚ à¤¦à¥‡à¤–à¥‡à¤‚à¥¤",
-                    "ai": "Voice à¤”à¤° visuals AI à¤•à¥€ à¤®à¤¦à¤¦ à¤¸à¥‡ à¤¬à¤¨à¤¾à¤ à¤—à¤ à¤¹à¥ˆà¤‚à¥¤ Facts à¤Šà¤ªà¤° à¤¦à¤¿à¤ à¤—à¤ sources à¤ªà¤° à¤†à¤§à¤¾à¤°à¤¿à¤¤ à¤¹à¥ˆà¤‚à¥¤",
+           "ui": {"news": "टेक न्यूज़", "fact": "तथ्य", "subscribe": "SUBSCRIBE", "like": "लाइक", "comment": "कमेंट",
+                  "share": "शेयर"},
+           "follow_line": "ऐसी ही tech news के लिए TechPulse को follow करें।",
+           "text": {"in_video": "इस वीडियो में:", "sources": "Sources",
+                    "subscribe": "रोज़ की Tech और AI news के लिए {c} को Subscribe करें।",
+                    "more_short": "पूरी कहानी हमारे channel पर देखें।", "more_long": "छोटे updates हमारे Shorts में देखें।",
+                    "ai": "Voice और visuals AI की मदद से बनाए गए हैं। Facts ऊपर दिए गए sources पर आधारित हैं।",
                     "credits": "Image credits (Wikimedia Commons / stock):"},
            "style": ("Conversational Hindi in Devanagari script, the way popular Indian tech YouTubers speak: keep product"
                      " names and everyday tech words (AI, app, phone, launch, update, chip, feature, price) in English"
@@ -452,7 +456,8 @@ STORY: {pick['topic']} - angle: {pick.get('angle', '')}
 
 Shorts rules: first sentence is the hook; one fast idea per sentence; build to the most surprising fact;
 the LAST sentence must flow naturally back into the first sentence so the Short loops seamlessly
-(looping replays boost Shorts), and include one comment question just before it.
+(looping replays boost Shorts). Just before that last sentence, in this order: one comment question, then exactly this
+short line: "{L()['follow_line']}"
 {RULES}
 {SEO_RULES}
 {lang_rules()}
@@ -856,7 +861,7 @@ def render_motion(work, kind, words, duration, clips, title, sections, host=None
     for font in ("Anton-Regular.ttf", "Mukta-ExtraBold.ttf"):  # Mukta covers Devanagari (Hindi)
         shutil.copy(ROOT / "fonts" / font, work / font)
     shutil.copy(ROOT / "assets" / "logo.jpg", work / "logo.jpg")
-    for sfx in ("whoosh.wav", "pop.wav"):
+    for sfx in ("whoosh.wav", "pop.wav", "ding.wav", "hit.wav"):
         shutil.copy(ROOT / "assets" / "sfx" / sfx, work / sfx)
     tracks = sorted((ROOT / "assets" / "music").glob("*.mp3"))
     music = None
@@ -1092,7 +1097,7 @@ def after_upload(vid, thumb=None, comment=None):
 
 
 PLAYLISTS = {"en": ("TechPulse: Daily Tech & AI News (English)", "Every TechPulse tech and AI news video in English."),
-             "hi": ("TechPulse Hindi: à¤Ÿà¥‡à¤• à¤”à¤° AI à¤¨à¥à¤¯à¥‚à¤œà¤¼ à¤¹à¤¿à¤‚à¤¦à¥€ à¤®à¥‡à¤‚", "TechPulse à¤•à¥‡ à¤¸à¤­à¥€ Hindi tech à¤”à¤° AI news videos.")}
+             "hi": ("TechPulse Hindi: टेक और AI न्यूज़ हिंदी में", "TechPulse के सभी Hindi tech और AI news videos.")}
 
 
 def add_to_playlist(vid):

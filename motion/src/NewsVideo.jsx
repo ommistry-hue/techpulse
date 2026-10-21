@@ -222,24 +222,84 @@ const Captions = ({ words, L }) => {
   );
 };
 
-const Subscribe = ({ L, ui }) => {
+const ICONS = {
+  like: "M2 21h4V9H2v12zm20-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L13.17 1 7.59 6.59C7.22 6.95 7 7.45 7 8v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1z",
+  comment: "M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z",
+  share: "M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92 1.61 0 2.92-1.31 2.92-2.92s-1.31-2.92-2.92-2.92z",
+  bell: "M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm7-6V11a7 7 0 0 0-5.5-6.84V3.5a1.5 1.5 0 0 0-3 0v.66A7 7 0 0 0 5 11v5l-2 2v1h18v-1l-2-2Z",
+};
+export const CTA_STEP = 0.45;  // seconds between buttons popping in
+
+// End sequence: Like -> Comment -> Share -> Subscribe pop in one by one; each gets "tapped" (fills with colour).
+const EndCTA = ({ L, ui }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const inn = spring({ frame, fps, config: { damping: 10 } });
-  const ring = Math.sin(frame / 4) * 12;
+  const items = [
+    { key: "like", label: ui.like, on: BLUE },
+    { key: "comment", label: ui.comment, on: CYAN },
+    { key: "share", label: ui.share, on: PURPLE },
+    { key: "bell", label: ui.subscribe, on: "#ff0033", big: true },
+  ];
   return (
-    <div style={{ position: "absolute", left: L ? 80 : 0, right: L ? "auto" : 0, bottom: L ? 230 : 1180,
-      display: "flex", justifyContent: "center", transform: `scale(${inn})` }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 18, background: "#ff0033", color: WHITE, fontFamily: FONT,
-        fontSize: L ? 58 : 72, padding: L ? "14px 34px" : "16px 40px", borderRadius: 16, letterSpacing: 2,
-        boxShadow: "0 12px 40px rgba(255,0,51,.45)" }}>
-        {ui.subscribe}
-        <svg width={L ? 52 : 64} height={L ? 52 : 64} viewBox="0 0 24 24" style={{ transform: `rotate(${ring}deg)` }}>
-          <path fill="#fff" d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm7-6V11a7 7 0 0 0-5.5-6.84V3.5a1.5 1.5 0 0 0-3 0v.66A7 7 0 0 0 5 11v5l-2 2v1h18v-1l-2-2Z" />
-        </svg>
-      </div>
+    <div style={{ position: "absolute", left: L ? 70 : 60, right: L ? "auto" : 60, top: L ? 200 : 300,
+      display: "flex", flexDirection: L ? "row" : "column", flexWrap: "wrap", gap: L ? 18 : 22, alignItems: L ? "center" : "stretch",
+      maxWidth: L ? 1150 : "none" }}>
+      {items.map((it, i) => {
+        const at = Math.round(i * CTA_STEP * fps);
+        const inn = spring({ frame: frame - at, fps, config: { damping: 11, stiffness: 160 } });
+        const tap = interpolate(frame - at, [fps * 0.55, fps * 0.68, fps * 0.85], [1, 0.9, 1], clamp);
+        const filled = frame - at > fps * 0.62;
+        const ring = it.key === "bell" ? Math.sin(frame / 4) * 14 : 0;
+        const bg = filled || it.big ? it.on : "rgba(7,13,26,.88)";
+        return (
+          <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 16, background: bg, color: WHITE,
+            border: `3px solid ${it.on}`, borderRadius: 18, fontFamily: FONT, letterSpacing: 2,
+            fontSize: it.big ? (L ? 56 : 74) : (L ? 44 : 60), padding: it.big ? (L ? "14px 32px" : "18px 36px") : (L ? "10px 24px" : "14px 30px"),
+            transform: `scale(${Math.max(0, inn) * tap})`, opacity: Math.min(1, Math.max(0, inn) * 1.5),
+            boxShadow: filled || it.big ? `0 0 34px ${it.on}88, 0 14px 40px rgba(0,0,0,.45)` : "0 14px 40px rgba(0,0,0,.45)" }}>
+            <svg width={it.big ? (L ? 50 : 66) : (L ? 40 : 54)} height={it.big ? (L ? 50 : 66) : (L ? 40 : 54)} viewBox="0 0 24 24"
+              style={{ transform: `rotate(${ring}deg)` }}><path fill="#fff" d={ICONS[it.key]} /></svg>
+            {it.label}
+          </div>
+        );
+      })}
     </div>
   );
+};
+
+// Long videos: a small reminder at ~40%, when viewers who will subscribe have usually decided they like the video.
+const SubscribePill = ({ ui }) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const inn = spring({ frame, fps, config: { damping: 13 } });
+  const out = interpolate(frame, [fps * 3.2, fps * 3.7], [1, 0], clamp);
+  return (
+    <div style={{ position: "absolute", right: 60, top: 40, transform: `translateX(${(1 - inn) * 500}px)`, opacity: out,
+      display: "flex", alignItems: "center", gap: 12, background: "#ff0033", color: WHITE, fontFamily: FONT, fontSize: 40,
+      padding: "10px 24px", borderRadius: 14, letterSpacing: 2, boxShadow: "0 10px 30px rgba(255,0,51,.45)" }}>
+      <svg width="38" height="38" viewBox="0 0 24 24" style={{ transform: `rotate(${Math.sin(frame / 4) * 14}deg)` }}>
+        <path fill="#fff" d={ICONS.bell} /></svg>
+      {ui.subscribe}
+    </div>
+  );
+};
+
+// Music ducking: quiet under the voice, fuller in pauses, swells under the end sequence.
+const speechSpans = (words, gap = 0.45) => {
+  const spans = [];
+  for (const [a, b] of words) {
+    const last = spans[spans.length - 1];
+    if (last && a - last[1] <= gap) last[1] = Math.max(last[1], b); else spans.push([a, b]);
+  }
+  return spans;
+};
+const speakingAmount = (spans, t, ramp = 0.25) => {  // 0 = silence, 1 = talking (smooth edges)
+  let best = 0;
+  for (const [a, b] of spans) {
+    if (t < a - ramp) break;
+    if (t <= b + ramp) best = Math.max(best, Math.min(1, (t - (a - ramp)) / ramp, ((b + ramp) - t) / ramp));
+  }
+  return Math.max(0, Math.min(1, best));
 };
 
 // ---------- presenter acting: gestures from the edit points, mouth from Rhubarb ----------
@@ -277,7 +337,7 @@ const mouthAt = (cues, t, talk) => {
 };
 
 export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mouth = [], title, channel, music = null,
-  character = "max", ui = { news: "TECH NEWS", fact: "FACT", subscribe: "SUBSCRIBE" }, durationInFrames }) => {
+  character = "max", ui = { news: "TECH NEWS", fact: "FACT", subscribe: "SUBSCRIBE", like: "LIKE", comment: "COMMENT", share: "SHARE" }, durationInFrames }) => {
   useFont();
   const { fps } = useVideoConfig();
   const frame = useCurrentFrame();
@@ -285,6 +345,7 @@ export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mo
   const t = frame / fps;
   const talk = useTalk(audio ? staticFile(audio) : null);
   const ctaStart = Math.max(0, durationInFrames - fps * (L ? 8 : 4));
+  const spans = useMemo(() => speechSpans(words), [words]);
   const events = useMemo(() => [...sections.map(s => s.start), ...facts.map(f => f.t)], [sections, facts]);
   const gestures = useMemo(() => buildGestures(fps, durationInFrames, events, ctaStart), [fps, durationInFrames, events, ctaStart]);
   const gi = Math.max(0, gestures.findIndex(g => frame >= g.start && frame < g.end));
@@ -326,15 +387,33 @@ export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mo
 
       <Sequence durationInFrames={fps * 4} layout="none"><HookTitle title={title} L={L} /></Sequence>
       {frame >= fps * 3.4 && <Captions words={words} L={L} />}
-      <Sequence from={ctaStart} layout="none"><Subscribe L={L} ui={ui} /></Sequence>
+      <Sequence from={ctaStart} layout="none"><EndCTA L={L} ui={ui} /></Sequence>
+      {L && durationInFrames > fps * 60 && (
+        <Sequence from={Math.round(durationInFrames * 0.4)} durationInFrames={Math.round(fps * 3.8)} layout="none">
+          <SubscribePill ui={ui} />
+          <Audio src={staticFile("pop.wav")} volume={0.35} />
+        </Sequence>
+      )}
 
       <div style={{ position: "absolute", left: 0, right: 0, [L ? "bottom" : "top"]: 0, height: L ? 10 : 14,
         background: "rgba(255,255,255,.15)" }}>
         <div style={{ width: `${(frame / durationInFrames) * 100}%`, height: "100%", background: NEON }} />
       </div>
       {audio && <Audio src={staticFile(audio)} />}
-      {music && <Audio src={staticFile(music)} loop volume={(f) => interpolate(f, [0, fps, durationInFrames - fps * 2, durationInFrames],
-        [0, L ? 0.07 : 0.1, L ? 0.07 : 0.1, 0], clamp)} />}
+      {music && <Audio src={staticFile(music)} loop volume={(f) => {
+        const t = f / fps, under = L ? 0.055 : 0.075, open = L ? 0.16 : 0.2;
+        let v = under + (open - under) * (1 - speakingAmount(spans, t));
+        if (f >= ctaStart) v = interpolate(f, [ctaStart, ctaStart + fps], [v, open * 1.15], clamp);  // swell under the end sequence
+        const fadeIn = interpolate(f, [0, fps * 0.4], [0.4, 1], clamp);
+        const fadeOut = interpolate(f, [durationInFrames - fps * 1.5, durationInFrames], [1, 0], clamp);
+        return v * fadeIn * fadeOut;
+      }} />}
+      <Audio src={staticFile("hit.wav")} volume={0.45} />
+      {["pop.wav", "pop.wav", "pop.wav", "ding.wav"].map((s, i) => (
+        <Sequence key={`c${i}`} from={ctaStart + Math.round(i * CTA_STEP * fps)} durationInFrames={Math.round(fps * 1.2)} layout="none">
+          <Audio src={staticFile(s)} volume={s === "ding.wav" ? 0.4 : 0.32} />
+        </Sequence>
+      ))}
       {scenes.slice(1).map((s, i) => (
         <Sequence key={`w${i}`} from={Math.max(0, Math.round(s.start * fps) - 4)} durationInFrames={Math.round(fps * 0.5)} layout="none">
           <Audio src={staticFile("whoosh.wav")} volume={0.22} />
