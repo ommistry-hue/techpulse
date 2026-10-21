@@ -1127,19 +1127,29 @@ def make_video(work, kind, meta, host=None):
 _YT = {}
 
 
+# Two Google Cloud projects = two daily API quotas (~6 uploads each) for the SAME channel.
+# Project 1 handles English uploads and all channel-wide work; project 2 handles Hindi uploads when connected.
+PROJECT = 1
+
+
+def project_files(p=None):
+    p = p or PROJECT
+    if p == 2:
+        return ROOT / "token_2.json", "YT_TOKEN_JSON_2", ROOT / "client_secret_2.json", "YT_CLIENT_SECRET_JSON_2"
+    return ROOT / "token.json", "YT_TOKEN_JSON", ROOT / "client_secret.json", "YT_CLIENT_SECRET_JSON"
+
+
+def project2_available():
+    return (ROOT / "token_2.json").exists() or bool(os.environ.get("YT_TOKEN_JSON_2"))
+
+
 def token_file():
-    """Hindi can upload to its own channel: token_hi.json (or secret YT_TOKEN_JSON_HI). Otherwise the main channel."""
-    if LANG != "en" and ((ROOT / f"token_{LANG}.json").exists() or os.environ.get(f"YT_TOKEN_JSON_{LANG.upper()}")
-                         or AUTH_MODE):
-        return ROOT / f"token_{LANG}.json", f"YT_TOKEN_JSON_{LANG.upper()}"
-    return ROOT / "token.json", "YT_TOKEN_JSON"
-
-
-AUTH_MODE = False
+    tok, var, _, _ = project_files()
+    return tok, var
 
 
 def youtube_client():
-    tok, tok_var = token_file()
+    tok, tok_var, secret, secret_var = project_files()
     if tok.name in _YT:
         return _YT[tok.name]
     from google.auth.transport.requests import Request
@@ -1149,7 +1159,7 @@ def youtube_client():
 
     os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")  # user may untick optional scopes on consent screen
     # Cloud runner: credentials come from encrypted GitHub Secrets, written to git-ignored files at runtime.
-    for path, var in ((tok, tok_var), (ROOT / "client_secret.json", "YT_CLIENT_SECRET_JSON")):
+    for path, var in ((tok, tok_var), (secret, secret_var)):
         if not path.exists() and os.environ.get(var):
             path.write_text(os.environ[var].lstrip("\ufeff"), encoding="utf-8")  # PowerShell pipes add a BOM
     # Load with the scopes the saved login was actually granted: asking for more on refresh fails (invalid_scope).
@@ -1158,7 +1168,7 @@ def youtube_client():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(str(ROOT / "client_secret.json"), SCOPES)
+            flow = InstalledAppFlow.from_client_secrets_file(str(secret), SCOPES)
             creds = flow.run_local_server(port=0)
         tok.write_text(creds.to_json())
     _YT[tok.name] = build("youtube", "v3", credentials=creds)
@@ -1600,7 +1610,7 @@ def process_requests():
             status = "skipped: nothing requested"
         elif not (token and repo):
             status = "failed: not running in the cloud"
-        elif uploads + want > 6:
+        elif uploads + want > 11:  # two Google projects: ~5-6 uploads each per day
             status = f"skipped: daily upload limit ({uploads} today)"
         else:
             r = requests.post(f"https://api.github.com/repos/{repo}/actions/workflows/factory.yml/dispatches",
@@ -1749,12 +1759,13 @@ def main():
     ap.add_argument("--reply-comments", action="store_true", help="reply to new viewer comments (max 5 per run)")
     ap.add_argument("--process-requests", action="store_true", help="start runs requested from the app")
     ap.add_argument("--weekly", action="store_true", help="make the long video the weekly Top 10 (default: Sundays)")
+    ap.add_argument("--project", type=int, choices=(1, 2), default=1, help="with --auth: which Google Cloud project to log in")
     args = ap.parse_args()
     load_env()
-    global LANG, AUTH_MODE
+    global LANG, PROJECT
     LANG = args.lang
     if args.auth:
-        AUTH_MODE = True
+        PROJECT = args.project
         youtube_client()
         log(f"YouTube auth OK, {token_file()[0].name} saved")
         return
@@ -1804,7 +1815,9 @@ def main():
         finish_run("no trends from any source")
         raise RuntimeError("No trends from any source")
 
-    log(f"Picking stories: {args.long} long, {args.shorts} Shorts")
+    if LANG == "hi" and project2_available():
+        PROJECT = 2  # Hindi uploads use the second project's daily quota
+    log(f"Picking stories: {args.long} long, {args.shorts} Shorts (uploads via Google Cloud project {PROJECT})")
     weekly = args.weekly or datetime.datetime.now(datetime.timezone.utc).weekday() == 6  # Sunday = weekly Top 10
     jobs = plan_videos(trends, niche, used, args.long, args.shorts, weekly=weekly)
     if not jobs:
