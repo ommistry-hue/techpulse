@@ -290,10 +290,31 @@ def lang_rules():
     return f"LANGUAGE: {L()['style']}"
 
 
+# Channel safety: topics that commonly lead to YouTube Community Guidelines strikes, age limits or demonetization.
+SAFE_TOPICS = ("NEVER pick stories about: deaths, shootings, violence, disasters or tragedies; elections, politicians or"
+               " political fights; health, medical or vaccine claims; sexual content; children or minors; hate or"
+               " religion; drugs or weapons; how-to hacking, piracy or cheating; investment, crypto or money advice;"
+               " crimes or accusations against named private people. Tech business, products, AI, apps, outages and"
+               " company security breaches are fine.")
+
+# Tie-breaker focus that rotates daily (see the 1-year plan doc); trends and performance still come first.
+DAY_FOCUS = {
+    "en": ["AI tools and AI drama", "phone launches and leaks", "hacks, outages and data leaks",
+           "big tech business (Apple, Google, Nvidia)", "apps changing their rules (Spotify, WhatsApp, X)",
+           "gadgets and gaming", "the week's biggest tech story, explained"],
+    "hi": ["AI in India (jobs, apps, government rules)", "phone prices and launches in India",
+           "bank and UPI security, data leaks", "Jio, Airtel and Indian startups", "app rules and bans in India",
+           "budget gadgets in India", "the week's biggest tech story, explained in Hindi"],
+}
+
+
 def topic_rules(niche, used):
     audience = ("Audience: Indian viewers. Prefer stories Indians care about (India launches, prices in India, Jio/Airtel,"
                 " Indian startups, global big-tech news that affects India)." if LANG == "hi" else "Audience: US/global English viewers.")
+    focus = DAY_FOCUS[LANG][datetime.date.today().toordinal() % 7]
     return (f"Channel: {CHANNEL()}, niche: {niche or 'tech'}. {audience}\n"
+            f"Today's preferred theme when stories are otherwise equal: {focus}.\n"
+            f"{SAFE_TOPICS}\n"
             f"Pick stories that fit the niche, are fresh today, and have the biggest audience (high searches,"
             f" points, upvotes, views; covered by several sources = bigger). Prefer stories viewers will have strong"
             f" feelings about (big brands, money, privacy, jobs, AI, new gadgets).\n"
@@ -305,6 +326,8 @@ def pick_topics(trends, niche, used, n_long, n_shorts):
 {trends_text(trends)}
 
 {topic_rules(niche, used)}
+
+{performance_block()}
 
 Pick {n_long} story for a long video and {n_shorts} DIFFERENT stories for Shorts (all different from each other).
 Return JSON only:
@@ -454,6 +477,48 @@ Return JSON only:
     return meta
 
 
+def fact_check(meta, ctx, kind):
+    """Second, strict pass: every claim must be backed by the source headlines. Unsupported sentences are softened or
+    removed; if the story itself is unsupported the video is held private (auto-publish skips it)."""
+    body = (json.dumps(meta["sections"], ensure_ascii=False) if kind == "long" else meta["script"])
+    heads = "\n".join(f"- {c['headline']} ({c['source']}, {c['date']})" for c in ctx) or "- (none)"
+    shape = '"sections": [{"heading": "...", "fact": "...", "text": "..."}]' if kind == "long" else '"script": "..."'
+    res = llm_json(f"""You are a strict news fact-checker for a YouTube channel.
+SOURCE HEADLINES (the only allowed facts):
+{heads}
+
+TITLE: {meta['title']}
+SCRIPT:
+{body}
+
+Check every factual claim (numbers, prices, dates, names, quotes, events, specs) in the script, title and on-screen facts.
+- Supported by the headlines: keep.
+- Not supported: rewrite that sentence as hedged context ("reports suggest", "not confirmed yet") or remove it.
+Keep everything else (language, tone, hook, length, structure) the same.
+verdict = "pass" (nothing changed), "fixed" (you corrected some sentences), or "fail" (the main story or title is not
+supported by the headlines at all, or is misleading).
+Also YouTube safety: safe = false if the video touches any of these: {SAFE_TOPICS}
+Also unsafe if the title or thumbnail text promises something the video does not deliver (misleading clickbait).
+Return JSON only: {{"verdict": "...", "safe": true, "safety_reason": "", "issues": ["short description of each problem"],
+ "title": "corrected title", {shape}}}""", required=("verdict",))
+    v = res.get("verdict", "fail")
+    if res.get("safe") is False:
+        v = "fail"
+        res.setdefault("issues", []).insert(0, "SAFETY: " + str(res.get("safety_reason", "unsafe topic")))
+    if v == "fixed":
+        if kind == "long" and res.get("sections"):
+            meta["sections"] = res["sections"]
+            meta["script"] = " ".join(s["text"].strip() for s in meta["sections"])
+        elif kind == "short" and res.get("script"):
+            meta["script"] = res["script"]
+        if res.get("title"):
+            meta["title"] = res["title"]
+    meta["fact_check"] = {"verdict": v, "issues": res.get("issues", [])[:8]}
+    meta["hold"] = v == "fail"
+    log(f"[{kind}] fact-check: {v}" + (f" ({len(res.get('issues', []))} issues)" if res.get("issues") else ""))
+    return meta
+
+
 def plan_videos(trends, niche, used, n_long, n_shorts):
     longs, shorts = pick_topics(trends, niche, used, n_long, n_shorts)
     jobs = []
@@ -463,7 +528,7 @@ def plan_videos(trends, niche, used, n_long, n_shorts):
                 query = p.get("search_query") or p["topic"]
                 ctx, kw = story_context(query), keyword_research(query)
                 log(f"[{kind}] '{p['topic']}': {len(ctx)} source headlines, {len(kw)} search suggestions")
-                meta = writer(p, ctx, kw)
+                meta = fact_check(writer(p, ctx, kw), ctx, kind)
                 meta["sources"] = sorted({c["source"] for c in ctx if c["source"]})[:8]
                 meta["search_suggestions"] = kw
                 jobs.append((kind, meta))
@@ -499,8 +564,9 @@ def pick_voice(i):
 def tts(text, mp3, kind, voice=None):
     for attempt in range(4):
         try:
-            return asyncio.run(_tts(text, voice or os.environ.get("TTS_VOICE", VOICES["male"]),
-                                    os.environ.get("TTS_RATE", "+10%"), mp3))
+            # English a little brisk for energy; Hindi at natural pace so it stays easy to follow.
+            rate = os.environ.get("TTS_RATE") or ("+0%" if LANG == "hi" else "+6%")
+            return asyncio.run(_tts(text, voice or VOICES["male"], rate, mp3))
         except Exception as e:
             if attempt == 3:
                 raise
@@ -790,11 +856,24 @@ def render_motion(work, kind, words, duration, clips, title, sections, host=None
     for font in ("Anton-Regular.ttf", "Mukta-ExtraBold.ttf"):  # Mukta covers Devanagari (Hindi)
         shutil.copy(ROOT / "fonts" / font, work / font)
     shutil.copy(ROOT / "assets" / "logo.jpg", work / "logo.jpg")
+    for sfx in ("whoosh.wav", "pop.wav"):
+        shutil.copy(ROOT / "assets" / "sfx" / sfx, work / sfx)
+    tracks = sorted((ROOT / "assets" / "music").glob("*.mp3"))
+    music = None
+    if tracks:  # rotate background tracks so videos don't all sound the same
+        pick = tracks[(datetime.date.today().toordinal() + len(words)) % len(tracks)]
+        shutil.copy(pick, work / "music.mp3")
+        music = "music.mp3"
+        name = pick.stem.replace("_", " ")
+        (work / "music_credit.txt").write_text(
+            f'Music: "{name}" Kevin MacLeod (incompetech.com), licensed under Creative Commons: By Attribution 4.0 '
+            f"http://creativecommons.org/licenses/by/4.0/", encoding="utf-8")
     props = {"kind": kind, "width": fmt["w"], "height": fmt["h"], "fps": fps, "durationInFrames": round(total * fps),
              "audio": "voice.mp3", "words": [[round(a, 3), round(b, 3), w] for a, b, w in words], "scenes": scenes,
              "sections": [{"start": round(t, 2), "heading": h} for t, h in sections], "title": title,
              "channel": os.environ.get("CHANNEL_NAME", "TechPulse").upper(),
              "character": (host or {}).get("character", "max"), "mouth": list(mouth), "ui": L()["ui"], "lang": LANG,
+             "music": music,
              "facts": [{"t": round(t, 2), "text": x} for t, x in facts]}
     (work / "props.json").write_text(json.dumps(props, ensure_ascii=False), encoding="utf-8")
     npx = shutil.which("npx") or "npx"
@@ -842,8 +921,9 @@ def make_video(work, kind, meta, host=None):
     if video is None:
         video = build_video(work, clips, duration, fmt)
     first_photo = next((c["path"] for c in clips if c["is_image"]), None)
+    mc = work / "music_credit.txt"
     return {"video": video, "words": words, "duration": duration, "credits": credits, "first_photo": first_photo,
-            "chapters": chapter_list}
+            "chapters": chapter_list, "music_credit": mc.read_text(encoding="utf-8") if mc.exists() else ""}
 
 
 # ---------- 6. YouTube ----------
@@ -926,6 +1006,8 @@ def description(meta, short, topic, credits, chapter_list=()):
         parts.append(f"{tx['sources']}: " + ", ".join(meta["sources"]))
     parts.append(tx["subscribe"].format(c=channel) + "\n" + (tx["more_short"] if short else tx["more_long"]))
     parts.append(tx["ai"])
+    if meta.get("music_credit"):
+        parts.append(meta["music_credit"])
     tail = hashtags(meta, short, topic)
     head = "\n\n".join(p for p in parts if p)
     if credits:
@@ -939,7 +1021,17 @@ def description(meta, short, topic, credits, chapter_list=()):
     return f"{head}\n\n{tail}"
 
 
-def upload(path, title, desc, tags, short):
+SAFETY_PAUSE = False  # set by channel_health(): YouTube rejected/removed something recently
+
+
+def privacy_for(meta):
+    """Auto-publish (YT_PRIVACY=public) unless the fact-check held the video back or the channel safety pause is on."""
+    if meta.get("hold") or SAFETY_PAUSE:
+        return "private"
+    return os.environ.get("YT_PRIVACY", "private")
+
+
+def upload(path, title, desc, tags, short, privacy=None):
     from googleapiclient.http import MediaFileUpload
 
     # Shorts are detected from the vertical format; #Shorts lives in the description, keeping the title clean.
@@ -948,7 +1040,7 @@ def upload(path, title, desc, tags, short):
         "snippet": {"title": title, "description": desc, "tags": tags,
                     "categoryId": os.environ.get("YT_CATEGORY", "28"), "defaultLanguage": LANG,
                     "defaultAudioLanguage": LANG},
-        "status": {"privacyStatus": os.environ.get("YT_PRIVACY", "public"), "selfDeclaredMadeForKids": False,
+        "status": {"privacyStatus": privacy or os.environ.get("YT_PRIVACY", "private"), "selfDeclaredMadeForKids": False,
                    "containsSyntheticMedia": True},
     }
     req = youtube_client().videos().insert(
@@ -987,6 +1079,73 @@ def after_upload(vid, thumb=None, comment=None):
             log(f"  comment skipped: {str(e)[:150]}")
 
 
+PLAYLISTS = {"en": ("TechPulse: Daily Tech & AI News (English)", "Every TechPulse tech and AI news video in English."),
+             "hi": ("TechPulse Hindi: टेक और AI न्यूज़ हिंदी में", "TechPulse के सभी Hindi tech और AI news videos.")}
+
+
+def add_to_playlist(vid):
+    """One playlist per language: autoplay into the next video = longer sessions, which the algorithm rewards."""
+    try:
+        yt = youtube_client()
+        title, desc = PLAYLISTS[LANG]
+        items = yt.playlists().list(part="snippet", mine=True, maxResults=50).execute().get("items", [])
+        pid = next((p["id"] for p in items if p["snippet"]["title"] == title), None)
+        if not pid:
+            pid = yt.playlists().insert(part="snippet,status", body={
+                "snippet": {"title": title, "description": desc, "defaultLanguage": LANG},
+                "status": {"privacyStatus": "public"}}).execute()["id"]
+        yt.playlistItems().insert(part="snippet", body={"snippet": {
+            "playlistId": pid, "position": 0, "resourceId": {"kind": "youtube#video", "videoId": vid}}}).execute()
+        log("  added to playlist")
+    except Exception as e:
+        log(f"  playlist skipped: {str(e)[:120]}")
+
+
+def reply_comments(limit=5):
+    """Reply to genuine viewer comments on recent videos (engagement signal). Max `limit` replies per run
+    (50 quota units each). Spam, toxic or already-answered comments are skipped."""
+    yt = youtube_client()
+    me = yt.channels().list(part="id", mine=True).execute()["items"][0]["id"]
+    recent = sb_rest("GET", f"insights?select=youtube_id,title,lang&created_at=gte.{days_ago(14)}&order=views.desc&limit=12")
+    cands = []
+    for v in recent:
+        try:
+            threads = yt.commentThreads().list(part="snippet", videoId=v["youtube_id"], order="time", maxResults=20,
+                                               textFormat="plainText").execute().get("items", [])
+        except Exception:
+            continue  # private video or comments off
+        for t in threads:
+            top = t["snippet"]["topLevelComment"]["snippet"]
+            if t["snippet"].get("totalReplyCount", 0) or top.get("authorChannelId", {}).get("value") == me:
+                continue
+            cands.append({"id": t["id"], "video": v["title"], "lang": v["lang"], "text": top["textDisplay"][:400]})
+    if not cands:
+        log("comments: nothing new to reply to")
+        return
+    cands = cands[:20]
+    res = llm_json(f"""You manage replies for {CHANNEL()}, a friendly tech & AI news YouTube channel.
+For each viewer comment decide whether to reply. SKIP spam, self-promotion, links, hate, insults, or comments that need
+no answer. Otherwise write a short warm reply (max 200 characters) in the SAME language as the comment
+(Hindi comment -> Hindi/Hinglish reply). Answer only from the video topic; never invent facts or promises; no links;
+sometimes end with a short question to keep the conversation going. Thank people who praise the video.
+
+COMMENTS:
+{json.dumps(cands, ensure_ascii=False, indent=1)}
+
+Return JSON only: {{"replies": [{{"id": "comment thread id", "reply": "text or SKIP"}}]}}""", required=("replies",))
+    sent = 0
+    for r in res.get("replies", []):
+        if sent >= limit or not r.get("reply") or r["reply"].strip().upper() == "SKIP":
+            continue
+        try:
+            yt.comments().insert(part="snippet", body={"snippet": {"parentId": r["id"],
+                                                                   "textOriginal": r["reply"].strip()[:300]}}).execute()
+            sent += 1
+        except Exception as e:
+            log(f"  reply failed: {str(e)[:100]}")
+    log(f"comments: replied to {sent} of {len(cands)} new comments")
+
+
 def upload_existing(work):
     """Upload an already-rendered video folder (used by the dashboard's Upload button)."""
     work = Path(work).resolve()
@@ -1022,10 +1181,9 @@ def sb_headers(extra=None):
     return {"apikey": key, "Authorization": f"Bearer {key}", **(extra or {})}
 
 
-def sb_rest(method, path, **kw):
+def sb_rest(method, path, prefer="return=representation", **kw):
     r = requests.request(method, f"{os.environ['SUPABASE_URL'].rstrip('/')}/rest/v1/{path}",
-                         headers=sb_headers({"Content-Type": "application/json", "Prefer": "return=representation"}),
-                         timeout=60, **kw)
+                         headers=sb_headers({"Content-Type": "application/json", "Prefer": prefer}), timeout=60, **kw)
     r.raise_for_status()
     return r.json() if r.text else []
 
@@ -1076,10 +1234,13 @@ def record(work, kind, meta, desc, duration, vid, thumb):
     thumb_path = sb_upload(thumb, f"{prefix}/thumb.jpg", "image/jpeg") if thumb else None
     sb_rest("POST", "videos", json={
         "kind": kind, "lang": LANG, "topic": meta["topic"], "title": meta["title"], "description": desc,
-        "tags": meta.get("tags", [])[:15], "status": "uploaded" if vid else "rendered", "youtube_id": vid,
-        "privacy": os.environ.get("YT_PRIVACY", "private") if vid else None,
+        "tags": meta.get("tags", [])[:15], "youtube_id": vid,
+        "privacy": privacy_for(meta) if vid else None,
+        "status": "published" if vid and privacy_for(meta) == "public" else ("uploaded" if vid else "rendered"),
         "preview_path": preview, "thumb_path": thumb_path, "duration_s": round(duration, 1),
-        "meta": {k: meta.get(k) for k in ("pinned_comment", "keywords", "thumbnail_text")}})
+        "meta": {k: meta.get(k) for k in ("pinned_comment", "keywords", "thumbnail_text", "fact_check", "host")}})
+    if vid:
+        sb_rest("POST", "insights", prefer="return=representation,resolution=merge-duplicates", json={"youtube_id": vid, "lang": LANG, "kind": kind, "topic": meta["topic"], "title": meta["title"]})
     log(f"[{kind}] saved to Supabase")
 
 
@@ -1104,22 +1265,59 @@ def publish_pending():
 
 
 def update_stats():
-    global LANG
-    rows = sb_rest("GET", "videos?select=id,youtube_id,lang&youtube_id=not.is.null")
-    current = LANG
-    for lang in sorted({r.get("lang") or "en" for r in rows}):
-        LANG = lang
-        mine = [r for r in rows if (r.get("lang") or "en") == lang]
-        for i in range(0, len(mine), 50):
-            chunk = {r["youtube_id"]: r["id"] for r in mine[i:i + 50]}
-            resp = youtube_client().videos().list(part="statistics,status", id=",".join(chunk)).execute()
-            for v in resp.get("items", []):
-                s = v.get("statistics", {})
-                sb_rest("PATCH", f"videos?id=eq.{chunk[v['id']]}", json={
-                    "privacy": v["status"]["privacyStatus"],
-                    "stats": {k: int(s.get(k, 0)) for k in ("viewCount", "likeCount", "commentCount")}})
-    LANG = current
-    log(f"stats updated for {len(rows)} videos")
+    """Refresh views/likes/comments for the last ~6 months (insights) and the app's 7-day list (videos).
+    One channel for all languages, so one batched API call per 50 videos (1 quota unit each)."""
+    since = days_ago(180)
+    ids = {r["youtube_id"] for r in sb_rest("GET", f"insights?select=youtube_id&created_at=gte.{since}")}
+    ids |= {r["youtube_id"] for r in sb_rest("GET", "videos?select=youtube_id&youtube_id=not.is.null")}
+    ids = sorted(ids)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    for i in range(0, len(ids), 50):
+        batch = ids[i:i + 50]
+        resp = youtube_client().videos().list(part="statistics,status", id=",".join(batch)).execute()
+        found = {v["id"] for v in resp.get("items", [])}
+        for gone in set(batch) - found:  # removed by YouTube (or deleted by hand)
+            sb_rest("PATCH", f"insights?youtube_id=eq.{gone}", json={"health": "missing", "updated_at": now})
+        for v in resp.get("items", []):
+            st = v["status"]
+            if st.get("uploadStatus") in ("rejected", "failed", "deleted") or st.get("rejectionReason"):
+                sb_rest("PATCH", f"insights?youtube_id=eq.{v['id']}", json={
+                    "health": f"{st.get('uploadStatus')}:{st.get('rejectionReason') or st.get('failureReason') or ''}",
+                    "updated_at": now})
+            s = v.get("statistics", {})
+            st = {k: int(s.get(k, 0)) for k in ("viewCount", "likeCount", "commentCount")}
+            sb_rest("PATCH", f"videos?youtube_id=eq.{v['id']}", json={"privacy": v["status"]["privacyStatus"], "stats": st})
+            sb_rest("PATCH", f"insights?youtube_id=eq.{v['id']}", json={
+                "views": st["viewCount"], "likes": st["likeCount"], "comments": st["commentCount"], "updated_at": now})
+    log(f"stats updated for {len(ids)} videos")
+    channel_health()
+
+
+def channel_health():
+    """Any video YouTube rejected or removed in the last 14 days = pause auto-publishing (upload as private)
+    until it clears, so one problem cannot snowball into strikes."""
+    global SAFETY_PAUSE
+    bad = sb_rest("GET", f"insights?select=youtube_id,title,health&health=not.is.null&updated_at=gte.{days_ago(14)}")
+    SAFETY_PAUSE = bool(bad) and os.environ.get("SAFETY_PAUSE_OFF") != "1"
+    if bad:
+        log(f"SAFETY: {len(bad)} video(s) rejected/removed recently -> new uploads stay private: "
+            + "; ".join(f"{b['youtube_id']} {b['health']}" for b in bad[:5]))
+    else:
+        log("SAFETY: channel healthy")
+
+
+def performance_block():
+    """What has worked on this channel for this language: fed to the story picker so it learns over time."""
+    if not sb_on():
+        return ""
+    rows = sb_rest("GET", f"insights?select=kind,title,views,likes,created_at&lang=eq.{LANG}&created_at=gte.{days_ago(60)}"
+                          f"&created_at=lt.{days_ago(2)}&order=views.desc")
+    if len(rows) < 4:
+        return ""
+    fmt = lambda r: f"- [{r['kind']}] {r['title']} - {r['views']} views, {r['likes']} likes"
+    return ("CHANNEL PERFORMANCE (learn from this; pick more stories like the winners, fewer like the losers):\n"
+            "Best:\n" + "\n".join(fmt(r) for r in rows[:8])
+            + ("\nWorst:\n" + "\n".join(fmt(r) for r in rows[max(8, len(rows) - 5):]) if len(rows) > 8 else ""))
 
 
 def cleanup():
@@ -1128,6 +1326,7 @@ def cleanup():
     sb_remove([p for r in old for p in (r["preview_path"], r["thumb_path"]) if p])
     if old:
         sb_rest("DELETE", f"videos?created_at=lt.{cutoff}")
+    sb_rest("DELETE", f"insights?created_at=lt.{days_ago(180)}")
     log(f"cleanup: removed {len(old)} records older than {KEEP_DAYS} days (YouTube videos are kept)")
 
 
@@ -1147,6 +1346,7 @@ def main():
     ap.add_argument("--publish-pending", action="store_true", help="make app-approved videos public")
     ap.add_argument("--stats", action="store_true", help="refresh YouTube stats in Supabase")
     ap.add_argument("--cleanup", action="store_true", help=f"delete Supabase records/files older than {KEEP_DAYS} days")
+    ap.add_argument("--reply-comments", action="store_true", help="reply to new viewer comments (max 5 per run)")
     args = ap.parse_args()
     load_env()
     global LANG, AUTH_MODE
@@ -1160,9 +1360,12 @@ def main():
         upload_existing(args.upload_dir)
         return
     maintenance = [f for flag, f in ((args.publish_pending, publish_pending), (args.stats, update_stats),
-                                     (args.cleanup, cleanup)) if flag]
+                                     (args.cleanup, cleanup), (args.reply_comments, reply_comments)) if flag]
     for f in maintenance:
-        f()
+        try:  # maintenance must never block making today's videos
+            f()
+        except Exception as e:
+            log(f"{f.__name__} failed: {str(e)[:200]}")
     if maintenance and args.long is None and args.shorts is None:
         return
     args.long = 1 if args.long is None else args.long
@@ -1194,6 +1397,7 @@ def main():
             host = pick_voice(i)
             meta["host"] = host
             r = make_video(work, kind, meta, host)
+            meta["music_credit"] = r["music_credit"]
             desc = description(meta, kind == "short", meta["topic"], r["credits"], r["chapters"])
             (work / "description.txt").write_text(desc, encoding="utf-8")
             thumb = make_thumbnail(work, meta.get("thumbnail_text") or meta["topic"], r["duration"] * 0.25,
@@ -1203,11 +1407,12 @@ def main():
                      "title": meta["title"], "video": str(r["video"])}
             vid = None
             if not args.no_upload:
-                vid = upload(r["video"], meta["title"], desc, clean_tags(meta), kind == "short")
-                log(f"[{kind}] uploaded https://youtu.be/{vid}")
+                privacy = privacy_for(meta)
+                vid = upload(r["video"], meta["title"], desc, clean_tags(meta), kind == "short", privacy)
+                log(f"[{kind}] uploaded https://youtu.be/{vid} ({privacy}{', held by fact-check' if meta.get('hold') else ''})")
                 # YouTube rejects comments on private videos; publish_pending() posts it once public.
-                public_now = os.environ.get("YT_PRIVACY", "private") == "public"
-                after_upload(vid, thumb, meta.get("pinned_comment") if public_now else None)
+                after_upload(vid, thumb, meta.get("pinned_comment") if privacy == "public" else None)
+                add_to_playlist(vid)
                 entry["youtube_id"] = vid
             record(work, kind, meta, desc, r["duration"], vid, thumb)
             history.append(entry)

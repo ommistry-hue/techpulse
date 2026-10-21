@@ -276,7 +276,7 @@ const mouthAt = (cues, t, talk) => {
   return "X";
 };
 
-export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mouth = [], title, channel,
+export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mouth = [], title, channel, music = null,
   character = "max", ui = { news: "TECH NEWS", fact: "FACT", subscribe: "SUBSCRIBE" }, durationInFrames }) => {
   useFont();
   const { fps } = useVideoConfig();
@@ -333,6 +333,18 @@ export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mo
         <div style={{ width: `${(frame / durationInFrames) * 100}%`, height: "100%", background: NEON }} />
       </div>
       {audio && <Audio src={staticFile(audio)} />}
+      {music && <Audio src={staticFile(music)} loop volume={(f) => interpolate(f, [0, fps, durationInFrames - fps * 2, durationInFrames],
+        [0, L ? 0.07 : 0.1, L ? 0.07 : 0.1, 0], clamp)} />}
+      {scenes.slice(1).map((s, i) => (
+        <Sequence key={`w${i}`} from={Math.max(0, Math.round(s.start * fps) - 4)} durationInFrames={Math.round(fps * 0.5)} layout="none">
+          <Audio src={staticFile("whoosh.wav")} volume={0.22} />
+        </Sequence>
+      ))}
+      {facts.map((f, i) => (
+        <Sequence key={`p${i}`} from={Math.round(f.t * fps)} durationInFrames={Math.round(fps * 0.3)} layout="none">
+          <Audio src={staticFile("pop.wav")} volume={0.35} />
+        </Sequence>
+      ))}
     </AbsoluteFill>
   );
 };

@@ -27,3 +27,6 @@ tools/bin/
 voice_samples/
 
 .venv-kokoro/
+
+# Downloaded at run time in the cloud (cached)
+assets/music/

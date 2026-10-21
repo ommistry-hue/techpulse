@@ -1,4 +1,4 @@
-﻿name: Factory (make + upload videos)
+name: Factory (make + upload videos)
 
 # YouTube API quota is 10,000 units/day per Google project; one upload costs 1,600.
 # 5 uploads/day (8,000) + thumbnails/comments/stats stays under the limit.
@@ -78,6 +78,21 @@ jobs:
             unzip -q /tmp/rhubarb.zip -d tools/bin
           fi
           chmod +x tools/bin/Rhubarb-Lip-Sync-*/rhubarb
+      - name: Cache background music
+        uses: actions/cache@v4
+        with:
+          path: assets/music
+          key: music-kevin-macleod-v1
+      - name: Get background music (Kevin MacLeod, CC BY 4.0; credited in each description)
+        run: |
+          mkdir -p assets/music
+          for n in "Digital Lemonade" "Voxel Revolution" "Inspired" "Hyperfun" "Funk Game Loop"; do
+            f="assets/music/${n// /_}.mp3"
+            [ -s "$f" ] && continue
+            curl -sSLf --retry 3 --max-time 180 -o "$f" "https://incompetech.com/music/royalty-free/mp3-royaltyfree/${n// /%20}.mp3" \
+              || { echo "skip $n"; rm -f "$f"; }
+          done
+          ls -la assets/music
       - name: Decide language and how many videos
         id: plan
         env:
@@ -95,4 +110,4 @@ jobs:
           [[ "$G" =~ ^(en|hi)$ && "$L" =~ ^[01]$ && "$S" =~ ^[0-4]$ ]] || { echo "bad input"; exit 1; }
           echo "args=--lang $G --long $L --shorts $S" >> "$GITHUB_OUTPUT"
       - name: Make and upload
-        run: python -u autotube.py ${{ steps.plan.outputs.args }} --publish-pending --stats --cleanup
+        run: python -u autotube.py ${{ steps.plan.outputs.args }} --publish-pending --stats --cleanup --reply-comments

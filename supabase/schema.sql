@@ -53,3 +53,24 @@ create policy "admins read video files" on storage.objects for select to authent
 
 -- Video language (en | hi)
 alter table public.videos add column if not exists lang text not null default 'en';
+
+-- Long-term performance memory (kept ~6 months, no files) used to steer topic choice.
+create table if not exists public.insights (
+  youtube_id text primary key,
+  lang text not null default 'en',
+  kind text,
+  topic text,
+  title text,
+  created_at timestamptz not null default now(),
+  views integer not null default 0,
+  likes integer not null default 0,
+  comments integer not null default 0,
+  updated_at timestamptz
+);
+alter table public.insights enable row level security;
+drop policy if exists "admins read insights" on public.insights;
+create policy "admins read insights" on public.insights for select to authenticated using (public.is_app_admin());
+grant select on public.insights to authenticated;
+
+-- Channel safety: set when YouTube rejects/removes a video
+alter table public.insights add column if not exists health text;
