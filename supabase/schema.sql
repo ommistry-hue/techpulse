@@ -144,3 +144,9 @@ create policy "admins change settings" on public.settings for update to authenti
 
 -- Title optimisation: original title kept when the automation re-titles a weak video
 alter table public.insights add column if not exists retitled text;
+
+-- Amazon Associates tracking IDs, entered in the app (More > Amazon affiliate)
+insert into public.settings (key, value) values ('affiliate', '{"us": "", "in": ""}') on conflict (key) do nothing;
+drop policy if exists "admins change settings" on public.settings;
+create policy "admins change settings" on public.settings for update to authenticated
+  using (public.is_app_admin()) with check (public.is_app_admin() and key in ('paused', 'autopublish', 'goals', 'affiliate'));

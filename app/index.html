@@ -183,6 +183,22 @@
         </div>
         <p class="hint">Watch hours and earnings are only in YouTube Studio.</p>
       </div>
+      <div class="panel" id="affPanel">
+        <h2>Amazon affiliate</h2>
+        <p class="hint" style="margin-top:0" id="affStatus"></p>
+        <div class="form-row">
+          <label>US tracking ID<input id="affUs" placeholder="yourid-20" autocomplete="off" style="font:inherit;color:var(--text);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px;min-height:44px;width:100%"></label>
+          <label>India tracking ID<input id="affIn" placeholder="yourid-21" autocomplete="off" style="font:inherit;color:var(--text);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px;min-height:44px;width:100%"></label>
+        </div>
+        <div class="actions"><button class="btn primary" id="affSave">Save</button></div>
+        <ol class="steps hint" style="margin-top:10px">
+          <li>Sign up (free): <a href="https://affiliate-program.amazon.com" target="_blank" rel="noopener">Amazon US</a> and
+            <a href="https://affiliate.amazon.in" target="_blank" rel="noopener">Amazon India</a>. Website: youtube.com/@techpulse-op, topic Technology.</li>
+          <li>Copy each tracking ID from the top right of its dashboard (US ends in -20, India in -21).</li>
+          <li>Paste them here and tap Save. From the next product video, links are added automatically (English videos use the US ID, Hindi videos the India ID).</li>
+        </ol>
+        <p class="hint">Only the tracking IDs go here, never passwords. Videos without a buyable product get no links. Amazon closes accounts with no 3 sales in 180 days (free to re-apply).</p>
+      </div>
       <div class="panel">
         <h2>Account</h2>
         <div class="hint" id="who"></div>
@@ -268,7 +284,7 @@ async function loadAll() {
     const { data: urls } = await db.storage.from("videos").createSignedUrls(paths, 3600);
     (urls || []).forEach(u => { if (u.signedUrl) S.thumbs[u.path] = u.signedUrl; });
   }
-  renderHome(); renderVideos(); renderInsights(); renderAuto();
+  renderHome(); renderVideos(); renderInsights(); renderAuto(); renderAffiliate();
 }
 
 // ---------- Home ----------
@@ -550,6 +566,22 @@ $("#tab-auto").addEventListener("click", async e => {
   S.requests = data || []; renderAuto();
 });
 
+
+// ---------- Amazon affiliate ----------
+function renderAffiliate() {
+  const a = S.settings.affiliate || {};
+  $("#affUs").value = a.us || ""; $("#affIn").value = a.in || "";
+  const st = (id) => id ? `<span style="color:var(--ok)">ON</span> (${esc(id)})` : '<span class="muted">off</span>';
+  $("#affStatus").innerHTML = `US links: ${st(a.us)} &nbsp;·&nbsp; India links: ${st(a.in)}`;
+}
+$("#affSave").onclick = async () => {
+  const us = $("#affUs").value.trim(), inn = $("#affIn").value.trim();
+  const ok = v => !v || /^[A-Za-z0-9-]{3,40}$/.test(v);
+  if (!ok(us) || !ok(inn)) return toast("A tracking ID has letters, numbers and dashes only (like yourid-20)");
+  if (us && !/-20$/.test(us) && !confirm("US tracking IDs usually end in -20. Save anyway?")) return;
+  if (inn && !/-21$/.test(inn) && !confirm("India tracking IDs usually end in -21. Save anyway?")) return;
+  if (await setSetting("affiliate", { us, in: inn })) { renderAffiliate(); toast("Saved. Links start on the next product video."); }
+};
 // ---------- shell ----------
 const TITLES = { home: "Home", videos: "Videos", insights: "Insights", auto: "Automation", more: "More" };
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => {

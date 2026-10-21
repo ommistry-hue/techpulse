@@ -1316,7 +1316,11 @@ AFFILIATE = {"en": ("AMAZON_TAG_US", "https://www.amazon.com/s"), "hi": ("AMAZON
 def affiliate_block(meta):
     """Amazon search links for products in the story (only when an Associates tag is configured), with disclosure."""
     var, base = AFFILIATE[LANG]
-    tag = os.environ.get(var, "").strip()
+    # Tracking ID from the app (More > Amazon affiliate), else the cloud setting. Only safe characters allowed.
+    app_tags = get_setting("affiliate", {}) or {}
+    tag = (app_tags.get("us" if LANG == "en" else "in") or os.environ.get(var, "")).strip()
+    if not re.fullmatch(r"[A-Za-z0-9-]{3,40}", tag or ""):
+        return ""
     items = [p for p in meta.get("products") or [] if isinstance(p, dict) and p.get("name") and p.get("search")][:3]
     if not tag or not items:
         return ""
