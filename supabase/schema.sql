@@ -126,3 +126,10 @@ grant select on public.channel_stats, public.runs, public.settings, public.run_r
 grant update (value, updated_at) on public.settings to authenticated;
 grant insert (lang, long, shorts) on public.run_requests to authenticated;
 grant usage on sequence public.run_requests_id_seq to authenticated;
+
+-- YouTube Analytics (watch time + retention), filled once the yt-analytics scope is granted
+alter table public.insights add column if not exists watch_minutes numeric;
+alter table public.insights add column if not exists avg_view_pct numeric;
+alter table public.insights add column if not exists avg_view_s numeric;
+alter table public.insights add column if not exists variant text;
+alter table public.channel_stats add column if not exists watch_hours numeric;

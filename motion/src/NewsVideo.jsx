@@ -172,7 +172,7 @@ const FactCard = ({ text, L, ui }) => {
   );
 };
 
-const HookTitle = ({ title, L }) => {
+const HookTitle = ({ title, L, duo }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const inn = spring({ frame, fps, config: { damping: 11 } });
@@ -180,7 +180,7 @@ const HookTitle = ({ title, L }) => {
   const shake = frame < 10 ? Math.sin(frame * 2.5) * (10 - frame) : 0;
   return (
     <AbsoluteFill style={{ justifyContent: L ? "center" : "flex-start", alignItems: "center", opacity: out,
-      paddingTop: L ? 0 : 300, paddingRight: L ? 420 : 0 }}>
+      paddingTop: L ? 0 : 300, paddingRight: L && !duo ? 420 : 0 }}>
       <div style={{ transform: `scale(${0.5 + inn * 0.5}) rotate(${-2 + shake * 0.2}deg)`, background: "rgba(7,13,26,.92)",
         borderRadius: 18, border: `5px solid ${CYAN}`, padding: L ? "22px 44px" : "26px 36px", maxWidth: L ? 1250 : 960,
         boxShadow: `0 0 50px ${CYAN}88, 0 25px 70px rgba(0,0,0,.6)` }}>
@@ -191,7 +191,7 @@ const HookTitle = ({ title, L }) => {
   );
 };
 
-const Captions = ({ words, L }) => {
+const Captions = ({ words, L, duo }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const t = frame / fps;
@@ -203,7 +203,7 @@ const Captions = ({ words, L }) => {
   if (!group.length || t < group[0][0] - 0.05) return null;
   return (
     <AbsoluteFill style={{ justifyContent: L ? "flex-end" : "center", alignItems: "center",
-      paddingBottom: L ? 70 : 0, paddingTop: L ? 0 : 560, paddingLeft: L ? 0 : 40, paddingRight: L ? 560 : 40 }}>
+      paddingBottom: L ? 70 : 0, paddingTop: L ? 0 : 560, paddingLeft: L ? (duo ? 430 : 0) : 40, paddingRight: L ? (duo ? 430 : 560) : 40 }}>
       <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: L ? "0 26px" : "0 40px",
         background: L ? "rgba(11,18,32,.72)" : "transparent", borderRadius: 18, padding: L ? "10px 30px" : 0, maxWidth: L ? 1200 : 1000 }}>
         {group.map(([t0, , w], i) => {
@@ -336,8 +336,52 @@ const mouthAt = (cues, t, talk) => {
   return "X";
 };
 
+// Big centre card for one sourced number, quote or comparison (breaks up the photo run, explains at a glance).
+const DataCard = ({ card, L }) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const inn = spring({ frame, fps, config: { damping: 12 } });
+  const out = interpolate(frame, [fps * 3.4, fps * 3.9], [1, 0], clamp);
+  const box = { background: "rgba(7,13,26,.94)", border: `4px solid ${CYAN}`, borderRadius: 26, color: WHITE, fontFamily: FONT,
+    boxShadow: `0 0 60px ${CYAN}55, 0 30px 80px rgba(0,0,0,.6)`, textAlign: "center" };
+  let body;
+  if (card.type === "stat") {
+    body = <div style={{ ...box, padding: L ? "30px 70px" : "36px 50px" }}>
+      <div style={{ fontSize: L ? 150 : 170, lineHeight: 1, color: CYAN }}>{card.value}</div>
+      <div style={{ fontSize: L ? 54 : 62, marginTop: 14, textTransform: "uppercase" }}>{card.label}</div></div>;
+  } else if (card.type === "quote") {
+    body = <div style={{ ...box, padding: L ? "34px 60px" : "40px 46px", maxWidth: L ? 1300 : 960 }}>
+      <div style={{ fontSize: L ? 140 : 160, lineHeight: 0.6, color: CYAN }}>&ldquo;</div>
+      <div style={{ fontSize: L ? 62 : 70, lineHeight: 1.15 }}>{card.text}</div>
+      <div style={{ fontSize: L ? 40 : 46, marginTop: 18, color: CYAN }}>&mdash; {card.source}</div></div>;
+  } else {
+    const side = (txt, color) => <div style={{ ...box, borderColor: color, padding: L ? "28px 44px" : "30px 36px",
+      fontSize: L ? 66 : 70, flex: 1 }}>{txt}</div>;
+    body = <div style={{ display: "flex", flexDirection: L ? "row" : "column", alignItems: "center", gap: 24, width: L ? 1300 : 900 }}>
+      {side(card.left, BLUE)}
+      <div style={{ fontFamily: FONT, fontSize: L ? 80 : 90, color: CYAN }}>VS</div>
+      {side(card.right, PURPLE)}</div>;
+  }
+  return (
+    <AbsoluteFill style={{ background: `rgba(7,13,26,${0.55 * inn * out})`, justifyContent: "center", alignItems: "center",
+      paddingBottom: L ? 120 : 300 }}>
+      <div style={{ transform: `scale(${0.6 + inn * 0.4})`, opacity: out }}>
+        {card.type === "versus" && card.label && <div style={{ fontFamily: FONT, color: WHITE, fontSize: L ? 52 : 60,
+          textAlign: "center", marginBottom: 18, textTransform: "uppercase" }}>{card.label}</div>}
+        {body}
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+const speakerAt = (turns, t) => {
+  let s = turns.length ? turns[0][2] : null;
+  for (const [a, , who] of turns) { if (a <= t) s = who; else break; }
+  return s;
+};
+
 export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mouth = [], title, channel, music = null,
-  character = "max", ui = { news: "TECH NEWS", fact: "FACT", subscribe: "SUBSCRIBE", like: "LIKE", comment: "COMMENT", share: "SHARE" }, durationInFrames }) => {
+  turns = [], cards = [], character = "max", ui = { news: "TECH NEWS", fact: "FACT", subscribe: "SUBSCRIBE", like: "LIKE", comment: "COMMENT", share: "SHARE" }, durationInFrames }) => {
   useFont();
   const { fps } = useVideoConfig();
   const frame = useCurrentFrame();
@@ -352,6 +396,16 @@ export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mo
   const g = gestures[gi], prev = gestures[gi - 1] || g;
   const blend = interpolate(frame - g.start, [0, 9], [0, 1], { ...clamp, easing: Easing.inOut(Easing.quad) });
   const brow = events.some(e => t >= e && t < e + 1.1) || frame < fps * 1.2 ? 1 : 0;
+  const duo = turns.length > 0;
+  const speaker = duo ? speakerAt(turns, t) : character;
+  // In a conversation the current speaker acts (mouth, gestures); the other listens and looks at them.
+  const host = (who) => {
+    const active = !duo || who === speaker;
+    return <Presenter character={who} frame={frame} mouth={active ? mouthAt(mouth, t, talk) : "X"}
+      pose={active ? g.type : "idle"} prevPose={active ? prev.type : "idle"} blend={active ? blend : 1}
+      talk={active ? talk : 0} brow={active ? brow : 0}
+      look={active && g.type !== "point" ? 0 : -1} size={L ? (duo ? 480 : 560) : 640} />;  // -1 = toward the other host / the cards
+  };
 
   return (
     <AbsoluteFill style={{ background: INK }}>
@@ -380,13 +434,23 @@ export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mo
         </Sequence>
       ))}
 
-      <div style={{ position: "absolute", right: L ? 40 : 80, bottom: L ? -70 : -40 }}>
-        <Presenter character={character} frame={frame} mouth={mouthAt(mouth, t, talk)} pose={g.type} prevPose={prev.type}
-          blend={blend} talk={talk} brow={brow} look={g.type === "point" ? -1 : 0} size={L ? 560 : 640} />
-      </div>
+      {cards.map((c, i) => (
+        <Sequence key={`k${i}`} from={Math.round(c.t * fps)} durationInFrames={Math.round(fps * 4)} layout="none">
+          <DataCard card={c} L={L} />
+          <Audio src={staticFile("pop.wav")} volume={0.35} />
+        </Sequence>
+      ))}
 
-      <Sequence durationInFrames={fps * 4} layout="none"><HookTitle title={title} L={L} /></Sequence>
-      {frame >= fps * 3.4 && <Captions words={words} L={L} />}
+      {duo ? <>
+        {/* Nova on the left, mirrored so she faces Max and points toward the middle */}
+        <div style={{ position: "absolute", left: 30, bottom: -50, transform: "scaleX(-1)" }}>{host("nova")}</div>
+        <div style={{ position: "absolute", right: 30, bottom: -50 }}>{host("max")}</div>
+      </> : (
+        <div style={{ position: "absolute", right: L ? 40 : 80, bottom: L ? -70 : -40 }}>{host(character)}</div>
+      )}
+
+      <Sequence durationInFrames={fps * 4} layout="none"><HookTitle title={title} L={L} duo={duo} /></Sequence>
+      {frame >= fps * 3.4 && <Captions words={words} L={L} duo={duo} />}
       <Sequence from={ctaStart} layout="none"><EndCTA L={L} ui={ui} /></Sequence>
       {L && durationInFrames > fps * 60 && (
         <Sequence from={Math.round(durationInFrames * 0.4)} durationInFrames={Math.round(fps * 3.8)} layout="none">

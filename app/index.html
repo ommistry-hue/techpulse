@@ -303,7 +303,9 @@ function renderHome() {
     <div class="panel"><h2>Road to monetization</h2>
       ${goal(last.subscribers, 500, "Expanded Partner Program (memberships)")}
       ${goal(last.subscribers, 1000, "Full Partner Program (ads)")}
-      <p class="hint">Also needs 4,000 watch hours in 12 months, or 10M Shorts views in 90 days. Watch hours are shown only in YouTube Studio.</p>
+      ${last.watch_hours != null ? goal(Math.round(last.watch_hours), 4000, "Watch hours (last 12 months)") : ""}
+      <p class="hint">${last.watch_hours != null ? "Ads need 1,000 subscribers plus 4,000 watch hours (or 10M Shorts views in 90 days). Watch hours update daily, about 2 days behind."
+        : "Also needs 4,000 watch hours in 12 months, or 10M Shorts views in 90 days. Watch hours appear here after the one-time analytics login."}</p>
     </div>
     <div class="panel"><h2>Coming up</h2><table><tbody>
       ${nextRuns().map(r => `<tr><td><b>${r.at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</b> <span class="muted">${inTime(r.at)}</span>
@@ -436,10 +438,10 @@ function renderInsights() {
       ${groups.map(g => `<tr><td>${LANG_NAME[g.l]} ${g.k === "long" ? "long" : "Shorts"}</td><td class="n">${g.n}</td><td class="n">${g.n ? full(g.avg) : "-"}</td></tr>`).join("")}
       </tbody></table></div>
     <div class="panel"><h2>Top videos (last 6 months)</h2>
-      ${top.length ? `<table><thead><tr><th>Video</th><th class="n">Views</th><th class="n">Likes</th></tr></thead><tbody>
+      ${top.length ? `<table><thead><tr><th>Video</th><th class="n">Views</th><th class="n">% watched</th></tr></thead><tbody>
       ${top.map(i => `<tr><td><a href="https://youtu.be/${esc(i.youtube_id)}" target="_blank" rel="noopener">${esc(i.title)}</a>
         <div class="muted" style="font-size:12px">${i.kind === "long" ? "Long" : "Short"} · ${(i.lang || "en").toUpperCase()} · ${new Date(i.created_at).toLocaleDateString()}${i.health ? ` · <span style="color:var(--danger)">${esc(i.health)}</span>` : ""}</div></td>
-        <td class="n">${full(i.views)}</td><td class="n">${full(i.likes)}</td></tr>`).join("")}</tbody></table>`
+        <td class="n">${full(i.views)}</td><td class="n">${i.avg_view_pct != null ? Math.round(i.avg_view_pct) + "%" : "-"}</td></tr>`).join("")}</tbody></table>`
       : '<div class="hint">No data yet.</div>'}
       <p class="hint">The story picker reads this same data before every run and makes more of what wins.</p></div>`;
 }
@@ -481,7 +483,8 @@ function renderAuto() {
       <li>Collects about 10 headlines from different outlets; the script may only use those facts.</li>
       <li>Writes the script, title, description and tags from real YouTube search phrases.</li>
       <li>Fact and safety check: fixes unsupported claims; holds back risky or unsupported stories.</li>
-      <li>Voice and presenter (Max or Nova), lip sync, real photos with camera moves, fact cards, music and sound effects.</li>
+      <li>Voice and presenters: long videos are a Max + Nova conversation, Shorts have one host (alternating). Lip sync, real photos with camera moves, fact and data cards, music and sound effects.</li>
+      <li>Sundays: the long video becomes a 10-12 minute "Top 10 tech stories of the week" countdown.</li>
       <li>Uploads, adds the thumbnail, a question comment and the language playlist.</li>
       <li>Replies to up to 5 genuine comments, updates stats and checks channel health.</li>
     </ol></div>`;

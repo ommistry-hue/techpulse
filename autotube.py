@@ -20,7 +20,8 @@ import requests
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "output"
 HISTORY = ROOT / "history.json"
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.force-ssl"]
+SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.force-ssl",
+          "https://www.googleapis.com/auth/yt-analytics.readonly"]
 UA = {"User-Agent": "Mozilla/5.0 (TechPulse trend fetcher)"}
 
 FORMATS = {
@@ -33,7 +34,7 @@ FONT = "Anton"  # bundled in fonts/ (OFL) so captions look the same on Windows a
 def subs_filter(work, ass):
     fontsdir = os.path.relpath(ROOT / "fonts", work).replace("\\", "/")
     return f"subtitles={ass}:fontsdir={fontsdir}"
-LENGTHS = {"long": (680, 820), "short": (110, 140)}
+LENGTHS = {"long": (680, 820), "short": (110, 140), "weekly": (1500, 1900)}
 
 # Each language = its own audience: trends region, news edition, voices, lip-sync mode, YouTube language, UI text.
 LANGS = {
@@ -43,6 +44,7 @@ LANGS = {
            "ui": {"news": "TECH NEWS", "fact": "FACT", "subscribe": "SUBSCRIBE", "like": "LIKE", "comment": "COMMENT",
                   "share": "SHARE"},
            "follow_line": "Follow TechPulse for daily tech news.",
+           "show_intro": "This is TechPulse Daily.", "signoff": "Stay curious, stay ahead.",
            "text": {"in_video": "In this video:", "sources": "Sources",
                     "subscribe": "Subscribe to {c} for daily tech & AI news in minutes.",
                     "more_short": "Watch the full stories on our channel.", "more_long": "Quick versions in our Shorts.",
@@ -55,6 +57,7 @@ LANGS = {
            "ui": {"news": "टेक न्यूज़", "fact": "तथ्य", "subscribe": "SUBSCRIBE", "like": "लाइक", "comment": "कमेंट",
                   "share": "शेयर"},
            "follow_line": "ऐसी ही tech news के लिए TechPulse को follow करें।",
+           "show_intro": "आप देख रहे हैं TechPulse Daily.", "signoff": "Curious रहिए, आगे रहिए।",
            "text": {"in_video": "इस वीडियो में:", "sources": "Sources",
                     "subscribe": "रोज़ की Tech और AI news के लिए {c} को Subscribe करें।",
                     "more_short": "पूरी कहानी हमारे channel पर देखें।", "more_long": "छोटे updates हमारे Shorts में देखें।",
@@ -179,25 +182,25 @@ def parse_json(text):
     return json.JSONDecoder().raw_decode(text[text.find("{"):])[0]
 
 
-def gemini(prompt, model):
+def gemini(prompt, model, timeout=None):
     r = requests.post(
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]},
         json={"contents": [{"parts": [{"text": prompt}]}],
               "generationConfig": {"responseMimeType": "application/json", "temperature": 0.9}},
-        timeout=LLM_TIMEOUT,
+        timeout=timeout or LLM_TIMEOUT,
     )
     r.raise_for_status()
     return r.json()["candidates"][0]["content"]["parts"][0]["text"]
 
 
-def openrouter(prompt, model):
+def openrouter(prompt, model, timeout=None):
     r = requests.post(
         "https://openrouter.ai/api/v1/chat/completions",
         headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"},
         json={"model": model, "temperature": 0.9,
               "messages": [{"role": "user", "content": prompt + "\n\nRespond with the JSON object only."}]},
-        timeout=LLM_TIMEOUT,
+        timeout=timeout or LLM_TIMEOUT,
     )
     r.raise_for_status()
     data = r.json()
@@ -236,13 +239,13 @@ def llm_providers():
     return providers
 
 
-def llm_json(prompt, required=()):
+def llm_json(prompt, required=(), timeout=None):
     """Try each provider/model in order; move to the next on rate limit, timeout, error or bad JSON.
     Two full rounds with a pause, because Gemini 503 'overloaded' errors usually clear within a minute."""
     for attempt in range(2):
         for call, model in llm_providers():
             try:
-                data = parse_json(call(prompt, model))
+                data = parse_json(call(prompt, model, timeout))
                 missing = [k for k in required if k not in data]
                 if missing:
                     raise ValueError(f"missing keys {missing}")
@@ -400,17 +403,46 @@ SCRIPT:
 Return JSON only: {{"script": "..."}}""", required=("script",))["script"]
 
 
-def write_long(pick, ctx, kw):
-    lo, hi = LENGTHS["long"]
-    meta = llm_json(f"""Write a {lo}-{hi} word (about 4-5 minute) YouTube video script for {CHANNEL()}, a tech & AI news channel.
-STORY: {pick['topic']} - angle: {pick.get('angle', '')}
+HOSTS_RULES = """TWO HOSTS (a conversation, not a lecture): Max (male) and Nova (female) co-host the show.
+- Every section is a back-and-forth: alternate speakers, 1-3 sentences per turn, 3-8 turns per section.
+- They react to each other ("Wait, really?", "Here's the part that surprised me"), ask each other the questions viewers
+  would ask, and each brings different facts. Friendly, curious, a little playful; never fake or over-the-top.
+- Max speaks first (the hook). Facts still come ONLY from the source headlines."""
 
-{facts_block(ctx, kw)}
+CARD_RULES = """On-screen cards (optional, 0 or 1 per section, only sourced facts):
+ {"type": "stat", "value": "$1,800", "label": "projected price"}  - one big number
+ {"type": "quote", "text": "short exact quote from a headline", "source": "Reuters"}
+ {"type": "versus", "left": "Old: 8GB", "right": "New: 16GB", "label": "RAM"}  - a comparison
+Use null when no sourced number, quote or comparison fits."""
 
-Structure as 6-8 sections in this order: hook (1-2 sentences), why it is trending now, background,
-key details, reactions / what people are saying (attribute to outlets), what happens next,
-what it means for YOU the viewer, closing (one comment question + ask to subscribe to {CHANNEL()}).
+SECTION_SHAPE = ('{"heading": "chapter title, 2-5 words", "fact": "max 7 words sourced fact or empty string", '
+                 '"card": null, "lines": [{"speaker": "max", "text": "..."}, {"speaker": "nova", "text": "..."}]}')
+
+
+def finalize_sections(meta):
+    """Derive the spoken text from the dialogue lines (sections keep 'text' for chapters/word counts)."""
+    for s in meta["sections"]:
+        lines = [l for l in s.get("lines") or [] if l.get("text", "").strip()]
+        for l in lines:
+            l["speaker"] = "nova" if str(l.get("speaker", "")).lower().startswith("n") else "max"
+        s["lines"] = lines
+        s["text"] = " ".join(l["text"].strip() for l in lines) or s.get("text", "")
+    meta["script"] = " ".join(s["text"].strip() for s in meta["sections"])
+    meta["dialogue"] = [l for s in meta["sections"] for l in s["lines"]]
+    return meta
+
+
+def write_dialogue(prompt_head, lo, hi, n_sections, structure, timeout=None):
+    show = L()
+    meta = llm_json(f"""{prompt_head}
+
+Write a {lo}-{hi} word YouTube video script as a two-host conversation, in {n_sections} sections: {structure}
+Right after the hook, one host says exactly: "{show['show_intro']}"
+The very last line of the video (Nova) ends with exactly: "{show['signoff']}"
+The closing section asks one question for the comments and asks viewers to subscribe to {CHANNEL()}.
 Count words carefully: total under {lo - 30} words is too short.
+{HOSTS_RULES}
+{CARD_RULES}
 {RULES}
 {SEO_RULES}
 {lang_rules()}
@@ -426,30 +458,76 @@ Return JSON only:
  "hashtags": ["...", "...", "..."],
  "thumbnail_text": "2-4 punchy words for the thumbnail",
  "pinned_comment": "one engaging question for viewers",
- "sections": [{{"heading": "chapter title, 2-5 words",
-               "fact": "on-screen fact card for this section, max 7 words, only a sourced fact or empty string",
-               "text": "spoken text"}}],
- "keywords": ["12 image search terms"]}}""", required=("topic", "title", "sections", "keywords"))
+ "sections": [{SECTION_SHAPE}],
+ "keywords": ["{n_sections * 2} image search terms"]}}""", required=("topic", "title", "sections", "keywords"), timeout=timeout)
+    finalize_sections(meta)
     for _ in range(2):
-        n = sum(len(s["text"].split()) for s in meta["sections"])
+        n = len(meta["script"].split())
         if n >= lo * 0.92:
             break
         log(f"[long] script only {n} words, expanding")
-        fixed = llm_json(f"""Expand these video script sections to {lo}-{hi} words in total. Keep headings, facts,
-order, hook and ending. Add depth without inventing numbers, quotes or dates. Keep the same language and style.
+        fixed = llm_json(f"""Expand this two-host video script to {lo}-{hi} words in total by adding more conversation turns
+(reactions, follow-up questions, what it means for viewers). Keep headings, facts, cards, order, hook, show intro line
+and sign-off. Never invent numbers, quotes or dates. Keep the same language and style.
 {lang_rules()}
 
 {json.dumps(meta['sections'], ensure_ascii=False)}
 
-Return JSON only: {{"sections": [{{"heading": "...", "fact": "...", "text": "..."}}]}}""", required=("sections",))
+Return JSON only: {{"sections": [{SECTION_SHAPE}]}}""", required=("sections",), timeout=timeout)
         meta["sections"] = fixed["sections"]
-    meta["script"] = " ".join(s["text"].strip() for s in meta["sections"])
+        finalize_sections(meta)
     return meta
 
 
-def write_short(pick, ctx, kw):
-    lo, hi = LENGTHS["short"]
-    meta = llm_json(f"""Write a YouTube Short script ({lo}-{hi} words, 40-50 seconds) for {CHANNEL()}, a tech & AI news channel.
+def write_long(pick, ctx, kw):
+    lo, hi = LENGTHS["long"]
+    return write_dialogue(
+        f"STORY for {CHANNEL()}, a tech & AI news channel: {pick['topic']} - angle: {pick.get('angle', '')}\n\n"
+        f"{facts_block(ctx, kw)}", lo, hi, "6-8",
+        "hook, why it is trending now, background, key details, reactions (attribute to outlets), what happens next, "
+        "what it means for YOU the viewer, closing.")
+
+
+def write_weekly(stories):
+    """'Top 10 tech stories of the week' long video (10-12 minutes): one section per story, countdown 10 -> 1."""
+    lo, hi = LENGTHS["weekly"]
+    blocks = "\n\n".join(f"STORY {i + 1}: {s['topic']}\n" + "\n".join(
+        f"- {c['headline']} ({c['source']}, {c['date']})" for c in s["ctx"]) for i, s in enumerate(stories))
+    meta = write_dialogue(
+        f"WEEKLY SPECIAL for {CHANNEL()}: the top {len(stories)} tech stories of the week, counted down from "
+        f"#{len(stories)} to #1 (#1 = biggest).\nSOURCE HEADLINES per story (only allowed facts):\n{blocks}",
+        lo, hi, f"{len(stories) + 2}",
+        f"hook (tease #1 without naming it), then one section per story counting down from #{len(stories)} to #1 "
+        "(heading like '#7 Apple's new chip'), then closing.", timeout=240)
+    meta["weekly"] = True
+    return meta
+
+
+SHORT_VARIANTS = {"quick": (60, 80, "25-30 seconds"), "standard": (110, 140, "40-50 seconds")}
+
+
+def pick_short_variant(i):
+    """A/B test of Short length. Alternates until each length has 8+ videos with retention data in the last 30 days,
+    then uses the winner (by average % watched x views) 70% of the time and keeps testing with the rest."""
+    try:
+        rows = sb_rest("GET", f"insights?select=variant,views,avg_view_pct&kind=eq.short&lang=eq.{LANG}"
+                              f"&variant=not.is.null&created_at=gte.{days_ago(30)}") if sb_on() else []
+    except Exception:
+        rows = []
+    score = {}
+    for v in SHORT_VARIANTS:
+        g = [r for r in rows if r["variant"] == v and r.get("avg_view_pct") is not None]
+        if len(g) >= 8:
+            score[v] = sum(r["avg_view_pct"] * (1 + r["views"]) ** 0.5 for r in g) / len(g)
+    if len(score) == len(SHORT_VARIANTS):
+        best = max(score, key=score.get)
+        return best if random.random() < 0.7 else min(score, key=score.get)
+    return list(SHORT_VARIANTS)[(datetime.date.today().toordinal() + i) % len(SHORT_VARIANTS)]
+
+
+def write_short(pick, ctx, kw, variant="standard"):
+    lo, hi, secs = SHORT_VARIANTS[variant]
+    meta = llm_json(f"""Write a YouTube Short script ({lo}-{hi} words, {secs}) for {CHANNEL()}, a tech & AI news channel.
 STORY: {pick['topic']} - angle: {pick.get('angle', '')}
 
 {facts_block(ctx, kw)}
@@ -462,6 +540,7 @@ short line: "{L()['follow_line']}"
 {SEO_RULES}
 {lang_rules()}
 For Shorts the title must be max 55 characters.
+{CARD_RULES} (For a Short: "card" = at most one card, or null.)
 
 Return JSON only:
 {{"topic": "short topic name",
@@ -474,6 +553,7 @@ Return JSON only:
  "hashtags": ["...", "...", "..."],
  "pinned_comment": "one engaging question",
  "facts": ["2-3 on-screen fact cards, max 7 words each, only sourced facts"],
+ "card": null,
  "script": "...",
  "keywords": ["6 image search terms"]}}""", required=("topic", "title", "script", "keywords"))
     if len(meta["script"].split()) < lo * 0.9:
@@ -485,9 +565,11 @@ Return JSON only:
 def fact_check(meta, ctx, kind):
     """Second, strict pass: every claim must be backed by the source headlines. Unsupported sentences are softened or
     removed; if the story itself is unsupported the video is held private (auto-publish skips it)."""
-    body = (json.dumps(meta["sections"], ensure_ascii=False) if kind == "long" else meta["script"])
+    body = (json.dumps(meta["sections"], ensure_ascii=False) if kind == "long"
+            else json.dumps({"script": meta["script"], "facts": meta.get("facts", []), "card": meta.get("card")},
+                            ensure_ascii=False))
     heads = "\n".join(f"- {c['headline']} ({c['source']}, {c['date']})" for c in ctx) or "- (none)"
-    shape = '"sections": [{"heading": "...", "fact": "...", "text": "..."}]' if kind == "long" else '"script": "..."'
+    shape = f'"sections": [{SECTION_SHAPE}]' if kind == "long" else '"script": "...", "facts": [...], "card": null'
     res = llm_json(f"""You are a strict news fact-checker for a YouTube channel.
 SOURCE HEADLINES (the only allowed facts):
 {heads}
@@ -496,7 +578,8 @@ TITLE: {meta['title']}
 SCRIPT:
 {body}
 
-Check every factual claim (numbers, prices, dates, names, quotes, events, specs) in the script, title and on-screen facts.
+Check every factual claim (numbers, prices, dates, names, quotes, events, specs) in the script, title, on-screen facts
+and cards (a card that is not sourced becomes null).
 - Supported by the headlines: keep.
 - Not supported: rewrite that sentence as hedged context ("reports suggest", "not confirmed yet") or remove it.
 Keep everything else (language, tone, hook, length, structure) the same.
@@ -513,9 +596,11 @@ Return JSON only: {{"verdict": "...", "safe": true, "safety_reason": "", "issues
     if v == "fixed":
         if kind == "long" and res.get("sections"):
             meta["sections"] = res["sections"]
-            meta["script"] = " ".join(s["text"].strip() for s in meta["sections"])
+            finalize_sections(meta)
         elif kind == "short" and res.get("script"):
             meta["script"] = res["script"]
+            meta["facts"] = res.get("facts", meta.get("facts", []))
+            meta["card"] = res.get("card")
         if res.get("title"):
             meta["title"] = res["title"]
     meta["fact_check"] = {"verdict": v, "issues": res.get("issues", [])[:8]}
@@ -524,16 +609,54 @@ Return JSON only: {{"verdict": "...", "safe": true, "safety_reason": "", "issues
     return meta
 
 
-def plan_videos(trends, niche, used, n_long, n_shorts):
-    longs, shorts = pick_topics(trends, niche, used, n_long, n_shorts)
+def plan_weekly(trends, niche):
+    """Pick the week's 10 biggest stories (this channel's last 7 days + today's trends) and write the countdown."""
+    recent = []
+    if sb_on():
+        recent = [r["topic"] for r in sb_rest("GET", f"insights?select=topic,views&lang=eq.{LANG}"
+                                                   f"&created_at=gte.{days_ago(7)}&order=views.desc&limit=30")]
+    picks = llm_json(f"""Pick the 10 biggest tech & AI stories of this week for a "Top 10 of the week" video ({niche}).
+{SAFE_TOPICS}
+Stories this channel covered this week (most viewed first): {json.dumps(recent, ensure_ascii=False)}
+Today's trending items:
+{trends_text(trends)}
+
+Order them 10 (smallest) to 1 (biggest). Return JSON only:
+{{"stories": [{{"topic": "short name", "search_query": "3-6 word news search query"}}]}}""", required=("stories",))
+    stories = []
+    for s in picks["stories"][:10]:
+        ctx = story_context(s.get("search_query") or s["topic"], n=6)
+        if ctx:
+            stories.append({"topic": s["topic"], "ctx": ctx})
+    log(f"[weekly] {len(stories)} stories with sources")
+    all_ctx = [c for s in stories for c in s["ctx"]]
+    meta = fact_check(write_weekly(stories), all_ctx, "long")
+    meta["sources"] = sorted({c["source"] for c in all_ctx if c["source"]})[:12]
+    meta["search_suggestions"] = keyword_research("tech news this week")
+    return meta
+
+
+def plan_videos(trends, niche, used, n_long, n_shorts, weekly=False):
     jobs = []
+    if weekly and n_long:
+        try:
+            jobs.append(("long", plan_weekly(trends, niche)))
+        except Exception as e:
+            log(f"[weekly] failed ({e}); making a normal long video instead")
+            weekly = False
+    longs, shorts = pick_topics(trends, niche, used, 0 if weekly else n_long, n_shorts)
     for kind, picks, writer in (("long", longs, write_long), ("short", shorts, write_short)):
-        for p in picks:
+        for i, p in enumerate(picks):
             try:
                 query = p.get("search_query") or p["topic"]
                 ctx, kw = story_context(query), keyword_research(query)
                 log(f"[{kind}] '{p['topic']}': {len(ctx)} source headlines, {len(kw)} search suggestions")
-                meta = fact_check(writer(p, ctx, kw), ctx, kind)
+                if kind == "short":
+                    variant = pick_short_variant(i)
+                    meta = fact_check(writer(p, ctx, kw, variant), ctx, kind)
+                    meta["variant"] = variant
+                else:
+                    meta = fact_check(writer(p, ctx, kw), ctx, kind)
                 meta["sources"] = sorted({c["source"] for c in ctx if c["source"]})[:8]
                 meta["search_suggestions"] = kw
                 jobs.append((kind, meta))
@@ -577,6 +700,43 @@ def tts(text, mp3, kind, voice=None):
                 raise
             log(f"[{kind}] TTS failed ({e}), retrying")
             time.sleep(10 * (attempt + 1))
+
+
+def tts_dialogue(lines, work, kind):
+    """Two-host audio: each line in its host's voice, joined with short natural pauses.
+    Returns (words with global timings, turns [[start, end, speaker]])."""
+    voices = {"max": L()["voices"]["male"], "nova": L()["voices"]["female"]}
+    gap, rate = 0.28, 24000
+    ff(["-f", "lavfi", "-i", f"anullsrc=r={rate}:cl=mono", "-t", str(gap), "gap.wav"], work)
+    words, turns, parts, t = [], [], [], 0.0
+    for i, line in enumerate(lines):
+        mp3 = work / f"line_{i:03d}.mp3"
+        w = tts(line["text"], mp3, kind, voices[line["speaker"]])
+        ff(["-i", mp3.name, "-ar", str(rate), "-ac", "1", f"line_{i:03d}.wav"], work)
+        dur = audio_duration(work / f"line_{i:03d}.wav")
+        words += [(a + t, b + t, x) for a, b, x in w]
+        turns.append([round(t, 3), round(t + dur, 3), line["speaker"]])
+        parts += [f"line_{i:03d}.wav", "gap.wav"]
+        t += dur + gap
+    (work / "voice_list.txt").write_text("".join(f"file '{p}'\n" for p in parts), encoding="utf-8")
+    ff(["-f", "concat", "-safe", "0", "-i", "voice_list.txt", "-c:a", "libmp3lame", "-b:a", "96k", "voice.mp3"], work)
+    for p in list(work.glob("line_*")) + [work / "gap.wav"]:
+        p.unlink(missing_ok=True)
+    return words, turns
+
+
+def card_times(meta, kind, duration, section_list):
+    """When each data/quote/comparison card shows: long = 7s into its section; short = about 38% in."""
+    out = []
+    if kind == "long":
+        starts = {h: t for t, h in section_list}
+        for s in meta.get("sections", []):
+            c = s.get("card")
+            if isinstance(c, dict) and c.get("type") in ("stat", "quote", "versus") and s["heading"].strip() in starts:
+                out.append({**c, "t": round(starts[s["heading"].strip()] + 7.0, 2)})
+    elif isinstance(meta.get("card"), dict) and meta["card"].get("type") in ("stat", "quote", "versus"):
+        out.append({**meta["card"], "t": round(duration * 0.38, 2)})
+    return out
 
 
 def rhubarb_exe():
@@ -823,7 +983,26 @@ def build_video(work, clips, duration, fmt):
     return work / "final.mp4"
 
 
-def make_thumbnail(work, text, at, image=None):
+def make_thumbnail(work, text, at, image=None, character=None):
+    """Host-face thumbnail (Remotion still); falls back to the plain text-on-photo version."""
+    if os.environ.get("RENDER_STYLE", "motion") == "motion":
+        try:
+            props = {"image": image.name if image else None, "text": text,
+                     "character": character or ("nova" if datetime.date.today().toordinal() % 2 else "max"),
+                     "channel": os.environ.get("CHANNEL_NAME", "TechPulse").upper()}
+            (work / "thumb_props.json").write_text(json.dumps(props, ensure_ascii=False), encoding="utf-8")
+            npx = shutil.which("npx") or "npx"
+            subprocess.run([npx, "remotion", "still", "src/index.jsx", "Thumb", str(work / "thumb.png"),
+                            f"--props={work / 'thumb_props.json'}", f"--public-dir={work}", "--log=error"],
+                           cwd=ROOT / "motion", check=True, timeout=300)
+            ff(["-i", "thumb.png", "-q:v", "3", "thumb.jpg"], work)  # JPG keeps it under YouTube's 2 MB limit
+            return work / "thumb.jpg"
+        except Exception as e:
+            log(f"  host thumbnail failed ({str(e)[:100]}), using plain thumbnail")
+    return make_plain_thumbnail(work, text, at, image)
+
+
+def make_plain_thumbnail(work, text, at, image=None):
     """1280x720 JPG: main-subject photo (or a video frame) darkened + big yellow headline + channel tag."""
     channel = os.environ.get("CHANNEL_NAME", "TechPulse").upper()
     # Brand colors (ASS is &HAABBGGRR): neon cyan #2BE4FF headline, navy #070D1A tag box.
@@ -846,7 +1025,8 @@ def make_thumbnail(work, text, at, image=None):
     return work / "thumb.jpg"
 
 
-def render_motion(work, kind, words, duration, clips, title, sections, host=None, mouth=(), facts=()):
+def render_motion(work, kind, words, duration, clips, title, sections, host=None, mouth=(), facts=(), turns=(),
+                  cards=()):
     """Animated style (Remotion): presenter character, kinetic captions, headline/fact cards.
     Assets are served from the work folder."""
     fmt = FORMATS[kind]
@@ -878,13 +1058,13 @@ def render_motion(work, kind, words, duration, clips, title, sections, host=None
              "sections": [{"start": round(t, 2), "heading": h} for t, h in sections], "title": title,
              "channel": os.environ.get("CHANNEL_NAME", "TechPulse").upper(),
              "character": (host or {}).get("character", "max"), "mouth": list(mouth), "ui": L()["ui"], "lang": LANG,
-             "music": music,
+             "music": music, "turns": list(turns), "cards": list(cards),
              "facts": [{"t": round(t, 2), "text": x} for t, x in facts]}
     (work / "props.json").write_text(json.dumps(props, ensure_ascii=False), encoding="utf-8")
     npx = shutil.which("npx") or "npx"
     subprocess.run([npx, "remotion", "render", "src/index.jsx", "Long" if kind == "long" else "Short",
                     str(work / "final.mp4"), f"--props={work / 'props.json'}", f"--public-dir={work}",
-                    "--log=error", "--crf=20"], cwd=ROOT / "motion", check=True)
+                    "--log=error", "--crf=20", "--concurrency=100%"], cwd=ROOT / "motion", check=True)  # all cores
     return work / "final.mp4"
 
 
@@ -902,8 +1082,13 @@ def make_video(work, kind, meta, host=None):
     fmt = FORMATS[kind]
     work.mkdir(parents=True, exist_ok=True)
     host = host or pick_voice(0)
-    log(f"[{kind}] voice ({host['gender']} host)")
-    words = tts(meta["script"], work / "voice.mp3", kind, host["voice"])
+    turns = []
+    if meta.get("dialogue"):
+        log(f"[{kind}] voice (two hosts, {len(meta['dialogue'])} lines)")
+        words, turns = tts_dialogue(meta["dialogue"], work, kind)
+    else:
+        log(f"[{kind}] voice ({host['gender']} host)")
+        words = tts(meta["script"], work / "voice.mp3", kind, host["voice"])
     write_ass(words, work / "subs.ass", fmt)
     duration = audio_duration(work / "voice.mp3")
     log(f"[{kind}] voice {duration:.0f}s, downloading visuals")
@@ -920,7 +1105,8 @@ def make_video(work, kind, meta, host=None):
             log(f"[{kind}] lip sync: {len(mouth)} mouth shapes")
             title = meta.get("hook_text") or meta["title"]
             video = render_motion(work, kind, words, duration, clips, title, section_list, host, mouth,
-                                  fact_times(meta, kind, words, duration, section_list))
+                                  fact_times(meta, kind, words, duration, section_list), turns,
+                                  card_times(meta, kind, duration, section_list))
         except Exception as e:  # never lose a day's video: fall back to the classic slideshow
             log(f"[{kind}] animated render failed ({str(e)[:150]}), using classic style")
     if video is None:
@@ -960,7 +1146,8 @@ def youtube_client():
     for path, var in ((tok, tok_var), (ROOT / "client_secret.json", "YT_CLIENT_SECRET_JSON")):
         if not path.exists() and os.environ.get(var):
             path.write_text(os.environ[var].lstrip("\ufeff"), encoding="utf-8")  # PowerShell pipes add a BOM
-    creds = Credentials.from_authorized_user_file(str(tok), SCOPES) if tok.exists() else None
+    # Load with the scopes the saved login was actually granted: asking for more on refresh fails (invalid_scope).
+    creds = Credentials.from_authorized_user_file(str(tok)) if tok.exists() else None
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
@@ -969,7 +1156,18 @@ def youtube_client():
             creds = flow.run_local_server(port=0)
         tok.write_text(creds.to_json())
     _YT[tok.name] = build("youtube", "v3", credentials=creds)
+    _YT[tok.name + ":creds"] = creds
     return _YT[tok.name]
+
+
+def analytics_client():
+    """YouTube Analytics (watch time, retention). Needs the yt-analytics.readonly scope from the login."""
+    from googleapiclient.discovery import build
+    youtube_client()
+    creds = _YT[token_file()[0].name + ":creds"]
+    if "https://www.googleapis.com/auth/yt-analytics.readonly" not in (creds.scopes or []):
+        return None
+    return build("youtubeAnalytics", "v2", credentials=creds)
 
 
 def hashtags(meta, short, topic):
@@ -1265,7 +1463,8 @@ def record(work, kind, meta, desc, duration, vid, thumb):
         "meta": {**{k: meta.get(k) for k in ("pinned_comment", "keywords", "thumbnail_text", "fact_check", "host")},
                  "hold": bool(meta.get("hold"))}})
     if vid:
-        sb_rest("POST", "insights", prefer="return=representation,resolution=merge-duplicates", json={"youtube_id": vid, "lang": LANG, "kind": kind, "topic": meta["topic"], "title": meta["title"]})
+        sb_rest("POST", "insights", prefer="return=representation,resolution=merge-duplicates", json={"youtube_id": vid, "lang": LANG, "kind": kind, "topic": meta["topic"], "title": meta["title"],
+                      "variant": meta.get("variant") or ("weekly" if meta.get("weekly") else None)})
     log(f"[{kind}] saved to Supabase")
 
 
@@ -1316,7 +1515,34 @@ def update_stats():
                 "views": st["viewCount"], "likes": st["likeCount"], "comments": st["commentCount"], "updated_at": now})
     log(f"stats updated for {len(ids)} videos")
     save_channel_stats()
+    try:
+        update_analytics(ids)
+    except Exception as e:
+        log(f"analytics skipped: {str(e)[:160]}")
     channel_health()
+
+
+def update_analytics(ids):
+    """Watch time and retention per video, plus channel watch hours (last 365 days, the monetization window).
+    YouTube Analytics lags about 2 days behind."""
+    ya = analytics_client()
+    if not ya:
+        log("analytics: not authorized yet (log in again with --auth to grant watch-time access)")
+        return
+    today = datetime.date.today()
+    for i in range(0, len(ids), 150):
+        rows = ya.reports().query(ids="channel==MINE", startDate="2020-01-01", endDate=str(today),
+                                  metrics="views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage",
+                                  dimensions="video", filters="video==" + ",".join(ids[i:i + 150]),
+                                  maxResults=200).execute().get("rows", [])
+        for vid, _views, minutes, avg_s, avg_pct in rows:
+            sb_rest("PATCH", f"insights?youtube_id=eq.{vid}", json={
+                "watch_minutes": minutes, "avg_view_s": avg_s, "avg_view_pct": round(avg_pct, 1)})
+    total = ya.reports().query(ids="channel==MINE", startDate=str(today - datetime.timedelta(days=365)),
+                               endDate=str(today), metrics="estimatedMinutesWatched").execute().get("rows", [[0]])
+    hours = round((total[0][0] if total else 0) / 60, 1)
+    sb_rest("PATCH", f"channel_stats?day=eq.{datetime.datetime.now(datetime.timezone.utc).date()}", json={"watch_hours": hours})
+    log(f"analytics: {hours} watch hours in the last 365 days")
 
 
 def save_channel_stats():
@@ -1415,6 +1641,7 @@ def main():
     ap.add_argument("--cleanup", action="store_true", help=f"delete Supabase records/files older than {KEEP_DAYS} days")
     ap.add_argument("--reply-comments", action="store_true", help="reply to new viewer comments (max 5 per run)")
     ap.add_argument("--process-requests", action="store_true", help="start runs requested from the app")
+    ap.add_argument("--weekly", action="store_true", help="make the long video the weekly Top 10 (default: Sundays)")
     args = ap.parse_args()
     load_env()
     global LANG, AUTH_MODE
@@ -1467,7 +1694,8 @@ def main():
         raise RuntimeError("No trends from any source")
 
     log(f"Picking stories: {args.long} long, {args.shorts} Shorts")
-    jobs = plan_videos(trends, niche, used, args.long, args.shorts)
+    weekly = args.weekly or datetime.datetime.now(datetime.timezone.utc).weekday() == 6  # Sunday = weekly Top 10
+    jobs = plan_videos(trends, niche, used, args.long, args.shorts, weekly=weekly)
     if not jobs:
         finish_run("no scripts written (AI models unavailable)")
         raise SystemExit("no scripts written")
