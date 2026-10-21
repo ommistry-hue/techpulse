@@ -1,0 +1,25 @@
+name: Voice samples (one-off comparison)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  samples:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq espeak-ng
+      - run: pip install -q "kokoro>=0.9.4" soundfile "misaki[en]"
+      - run: python tools/kokoro_samples.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kokoro-voice-samples
+          path: voice_samples/
+          retention-days: 7
