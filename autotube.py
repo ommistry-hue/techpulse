@@ -636,7 +636,7 @@ def youtube_client():
     # Cloud runner: credentials come from encrypted GitHub Secrets, written to git-ignored files at runtime.
     for path, var in ((tok, "YT_TOKEN_JSON"), (ROOT / "client_secret.json", "YT_CLIENT_SECRET_JSON")):
         if not path.exists() and os.environ.get(var):
-            path.write_text(os.environ[var], encoding="utf-8")
+            path.write_text(os.environ[var].lstrip("﻿"), encoding="utf-8")  # PowerShell pipes add a BOM
     creds = Credentials.from_authorized_user_file(str(tok), SCOPES) if tok.exists() else None
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
