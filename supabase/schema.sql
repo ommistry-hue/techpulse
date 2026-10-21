@@ -50,3 +50,6 @@ on conflict (id) do nothing;
 drop policy if exists "admins read video files" on storage.objects;
 create policy "admins read video files" on storage.objects for select to authenticated
   using (bucket_id = 'videos' and public.is_app_admin());
+
+-- Video language (en | hi)
+alter table public.videos add column if not exists lang text not null default 'en';

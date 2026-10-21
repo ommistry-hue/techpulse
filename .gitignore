@@ -21,3 +21,9 @@ app/config.js
 # Animation renderer deps
 motion/node_modules/
 token*.json
+
+# Downloaded tools (Rhubarb lip sync)
+tools/bin/
+voice_samples/
+
+.venv-kokoro/

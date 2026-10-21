@@ -3,7 +3,8 @@ import { NewsVideo } from "./NewsVideo";
 
 const defaults = {
   kind: "long", width: 1920, height: 1080, fps: 30, durationInFrames: 150,
-  audio: null, words: [], scenes: [], sections: [], title: "TechPulse", channel: "TECHPULSE",
+  audio: null, words: [], scenes: [], sections: [], facts: [], mouth: [], title: "TechPulse", channel: "TECHPULSE",
+  character: "max",
 };
 
 const meta = ({ props }) => ({

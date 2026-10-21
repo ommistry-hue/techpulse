@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>TechPulse Studio</title>
 <meta name="description" content="Review, publish and track TechPulse videos">
-<meta name="theme-color" content="#0b1220">
+<meta name="theme-color" content="#070d1a">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
@@ -13,20 +13,20 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <style>
   :root {
-    --bg: #0b1220; --surface: #131c2e; --surface-2: #1b2640; --line: #26324d;
-    --text: #e8edf7; --muted: #8d9ab5; --accent: #ffd400; --accent-ink: #1a1400;
+    --bg: #070d1a; --surface: #131c2e; --surface-2: #1b2640; --line: #26324d;
+    --text: #e8edf7; --muted: #8d9ab5; --accent: #2be4ff; --accent-ink: #04121c;
     --ok: #3ddc97; --warn: #ffb020; --danger: #ff6b6b; --link: #7cb7ff;
   }
   @media (prefers-color-scheme: light) {
     :root:not([data-theme="dark"]) {
       --bg: #f4f6fb; --surface: #ffffff; --surface-2: #eef1f8; --line: #dde3ef;
-      --text: #121826; --muted: #5d6880; --accent: #e8b800; --accent-ink: #1a1400;
+      --text: #121826; --muted: #5d6880; --accent: #0e9fbf; --accent-ink: #ffffff;
       --ok: #108a57; --warn: #b26b00; --danger: #c53030; --link: #1a5fd6;
     }
   }
   :root[data-theme="dark"] {
-    --bg: #0b1220; --surface: #131c2e; --surface-2: #1b2640; --line: #26324d;
-    --text: #e8edf7; --muted: #8d9ab5; --accent: #ffd400; --accent-ink: #1a1400;
+    --bg: #070d1a; --surface: #131c2e; --surface-2: #1b2640; --line: #26324d;
+    --text: #e8edf7; --muted: #8d9ab5; --accent: #2be4ff; --accent-ink: #04121c;
     --ok: #3ddc97; --warn: #ffb020; --danger: #ff6b6b; --link: #7cb7ff;
   }
   * { box-sizing: border-box; }
@@ -36,8 +36,7 @@
   header { position: sticky; top: 0; z-index: 5; background: var(--bg);
     padding: calc(12px + env(safe-area-inset-top)) 16px 12px; border-bottom: 1px solid var(--line);
     display: flex; align-items: center; gap: 10px; }
-  .logo { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); color: var(--accent-ink);
-    font-weight: 900; display: grid; place-items: center; font-size: 13px; flex: none; }
+  .logo { width: 32px; height: 32px; border-radius: 8px; flex: none; display: block; }
   h1 { font-size: 17px; margin: 0; flex: 1; }
   .icon-btn { border: 1px solid var(--line); background: var(--surface-2); color: var(--text); border-radius: 10px;
     min-height: 40px; padding: 0 12px; font: inherit; font-weight: 600; cursor: pointer; }
@@ -52,7 +51,7 @@
   .sub { color: var(--muted); font-size: 12.5px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .badge { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 6px; background: var(--surface-2); }
   .b-long { color: var(--link); } .b-short { color: var(--danger); }
-  .b-public { color: var(--ok); } .b-private { color: var(--muted); } .b-pending { color: var(--warn); }
+  .b-lang { color: var(--accent); } .b-public { color: var(--ok); } .b-private { color: var(--muted); } .b-pending { color: var(--warn); }
   .detail { border-top: 1px solid var(--line); padding: 12px; display: none; }
   .open .detail { display: block; }
   video { width: 100%; max-height: 70vh; background: #000; border-radius: 10px; display: block; }
@@ -95,7 +94,7 @@
 </head>
 <body>
 <div id="login" hidden>
-  <div class="logo" style="margin:0 auto;width:56px;height:56px;font-size:22px;border-radius:14px">TP</div>
+  <img class="logo" src="icon-192.png" alt="" style="margin:0 auto;width:72px;height:72px;border-radius:16px">
   <h1 style="margin-top:14px">TechPulse Studio</h1>
   <form id="loginForm">
     <input type="email" id="email" placeholder="Email" autocomplete="username" required>
@@ -107,7 +106,7 @@
 
 <div id="app" hidden>
   <header>
-    <div class="logo">TP</div>
+    <img class="logo" src="icon-192.png" alt="">
     <h1>TechPulse Studio</h1>
     <button class="icon-btn" id="reload">Refresh</button>
   </header>
@@ -187,6 +186,7 @@ function renderVideos() {
           <p class="title">${esc(v.title)}</p>
           <div class="sub">
             <span class="badge ${v.kind === "long" ? "b-long" : "b-short"}">${v.kind === "long" ? "LONG" : "SHORT"}</span>
+            <span class="badge b-lang">${esc((v.lang || "en").toUpperCase())}</span>
             <span class="badge ${cls}">${label}</span>
             <span>${when(v.created_at)}</span>
             ${v.youtube_id ? `<span>${num(s.viewCount)} views · ${num(s.likeCount)} likes</span>` : ""}

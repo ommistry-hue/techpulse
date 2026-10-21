@@ -24,8 +24,8 @@ SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googlea
 UA = {"User-Agent": "Mozilla/5.0 (TechPulse trend fetcher)"}
 
 FORMATS = {
-    "long": dict(w=1920, h=1080, orientation="landscape", font=104, align=2, margin_v=90, per_line=5, clip_secs=8),
-    "short": dict(w=1080, h=1920, orientation="portrait", font=150, align=5, margin_v=0, per_line=3, clip_secs=6),
+    "long": dict(w=1920, h=1080, orientation="landscape", font=104, align=2, margin_v=90, per_line=5, clip_secs=6),
+    "short": dict(w=1080, h=1920, orientation="portrait", font=150, align=5, margin_v=0, per_line=3, clip_secs=4),  # visual change every ~4s holds Shorts viewers
 }
 FONT = "Anton"  # bundled in fonts/ (OFL) so captions look the same on Windows and the Linux cloud runner
 
@@ -34,6 +34,38 @@ def subs_filter(work, ass):
     fontsdir = os.path.relpath(ROOT / "fonts", work).replace("\\", "/")
     return f"subtitles={ass}:fontsdir={fontsdir}"
 LENGTHS = {"long": (680, 820), "short": (110, 140)}
+
+# Each language = its own audience: trends region, news edition, voices, lip-sync mode, YouTube language, UI text.
+LANGS = {
+    "en": {"name": "English", "geo": "US", "news": "hl=en-US&gl=US&ceid=US:en", "suggest_hl": "en",
+           "voices": {"male": "en-US-AndrewMultilingualNeural", "female": "en-US-AvaMultilingualNeural"},
+           "lipsync": "pocketSphinx",
+           "ui": {"news": "TECH NEWS", "fact": "FACT", "subscribe": "SUBSCRIBE"},
+           "text": {"in_video": "In this video:", "sources": "Sources",
+                    "subscribe": "Subscribe to {c} for daily tech & AI news in minutes.",
+                    "more_short": "Watch the full stories on our channel.", "more_long": "Quick versions in our Shorts.",
+                    "ai": "Voice and visuals are AI-assisted. Facts are based on the sources listed above.",
+                    "credits": "Image credits (Wikimedia Commons / stock):"},
+           "style": "Natural spoken American English."},
+    "hi": {"name": "Hindi", "geo": "IN", "news": "hl=en-IN&gl=IN&ceid=IN:en", "suggest_hl": "hi",
+           "voices": {"male": "hi-IN-MadhurNeural", "female": "hi-IN-SwaraNeural"},
+           "lipsync": "phonetic",  # Rhubarb's English recognizer does not know Hindi; phonetic mode is language-neutral
+           "ui": {"news": "टेक न्यूज़", "fact": "तथ्य", "subscribe": "SUBSCRIBE"},
+           "text": {"in_video": "इस वीडियो में:", "sources": "Sources",
+                    "subscribe": "रोज़ की Tech और AI news के लिए {c} को Subscribe करें।",
+                    "more_short": "पूरी कहानी हमारे channel पर देखें।", "more_long": "छोटे updates हमारे Shorts में देखें।",
+                    "ai": "Voice और visuals AI की मदद से बनाए गए हैं। Facts ऊपर दिए गए sources पर आधारित हैं।",
+                    "credits": "Image credits (Wikimedia Commons / stock):"},
+           "style": ("Conversational Hindi in Devanagari script, the way popular Indian tech YouTubers speak: keep product"
+                     " names and everyday tech words (AI, app, phone, launch, update, chip, feature, price) in English"
+                     " using Latin letters. Simple words, friendly tone, like talking to a friend. Mention what it means"
+                     " for Indian users when the sources support it.")},
+}
+LANG = "en"  # set from --lang in main()
+
+
+def L():
+    return LANGS[LANG]
 
 
 def load_env():
@@ -220,27 +252,120 @@ def llm_json(prompt, required=()):
     raise RuntimeError("All LLM providers failed")
 
 
-RULES = """Rules:
-- Only state facts supported by the trend titles/headlines given. Otherwise frame as context, opinion or open question.
-- Never invent numbers, quotes, dates or specs.
+CHANNEL = lambda: os.environ.get("CHANNEL_NAME", "TechPulse")
+
+RULES = """Accuracy rules (most important):
+- Use ONLY facts found in the SOURCE HEADLINES below. If a detail is not there, do not state it as fact:
+  frame it as context, opinion or an open question ("reports suggest", "it is not confirmed yet").
+- Never invent numbers, prices, dates, quotes, specs or names. Attribute claims to their outlet ("according to The Verge").
 - Natural spoken English, no headings read aloud, no stage directions, no emojis, no hashtags in the script.
-- Image keywords (searched on Wikimedia Commons): 2-4 words each, unambiguous, in script order.
+
+Retention rules (what the YouTube algorithm rewards):
+- First sentence = hook in under 2 seconds: a surprising fact, stakes, or a question. No greetings, no channel intro.
+- Open a curiosity loop early ("but the real story is what happens next") and pay it off later.
+- Short punchy sentences; a new idea every 2-3 sentences; say "you" - tell viewers why it matters to THEM.
+
+Image keywords (searched on Wikimedia Commons): 2-4 words each, unambiguous, in script order.
   Keyword 1 = the exact main subject (used for the thumbnail), e.g. 'iPhone Duo' or 'Nvidia Blackwell GPU'.
-  Mostly specific names (company + product, full person name), e.g. 'Apple iPhone' not 'Apple',
-  'smartphone heat pipe' not 'pipe', 'Sam Altman OpenAI'. A few generic visuals like 'data center servers'."""
+  Mostly specific names, e.g. 'Apple iPhone' not 'Apple', 'Sam Altman OpenAI'. A few generic visuals like 'data center servers'."""
+
+SEO_RULES = """SEO rules:
+- primary_keyword: the phrase people actually search (prefer one from YOUTUBE SEARCH SUGGESTIONS).
+- title: primary keyword in the first 40 characters, specific + curiosity, honest (no clickbait lies), no hashtags,
+  no ALL CAPS sentences, no quotes around it.
+- description_hook: ONE sentence that starts with the primary keyword and says what viewers learn.
+- summary: 2-3 plain sentences with natural related search phrases.
+- tags: 15-20 tags; mix exact search phrases from the suggestions, the topic, company/product names and broad
+  tags like 'tech news'. No '#', no '<' or '>'.
+- hashtags: exactly 3, CamelCase, no spaces, most relevant first (e.g. "TechNews", "iPhone", "Apple")."""
+
+
+def lang_rules():
+    if LANG == "hi":
+        return ("LANGUAGE: Write the spoken script, description_hook, summary, key_points, facts, pinned_comment and section"
+                f" headings in Hindi. {L()['style']}\n"
+                "Title: Hinglish - start with the English search keyword Indians actually type (e.g. 'iPhone 17 Launch:'),"
+                " then a short Hindi hook in Devanagari. thumbnail_text and hook_text: short, English letters or Hinglish.\n"
+                "Tags: mix English search phrases, Hinglish phrases and Hindi words (e.g. 'tech news hindi', 'AI news in hindi').")
+    return f"LANGUAGE: {L()['style']}"
 
 
 def topic_rules(niche, used):
-    return (f"Channel: {os.environ.get('CHANNEL_NAME', 'TechPulse')}, niche: {niche or 'tech'}.\n"
+    audience = ("Audience: Indian viewers. Prefer stories Indians care about (India launches, prices in India, Jio/Airtel,"
+                " Indian startups, global big-tech news that affects India)." if LANG == "hi" else "Audience: US/global English viewers.")
+    return (f"Channel: {CHANNEL()}, niche: {niche or 'tech'}. {audience}\n"
             f"Pick stories that fit the niche, are fresh today, and have the biggest audience (high searches,"
-            f" points, upvotes, views; covered by several sources = bigger).\n"
+            f" points, upvotes, views; covered by several sources = bigger). Prefer stories viewers will have strong"
+            f" feelings about (big brands, money, privacy, jobs, AI, new gadgets).\n"
             f"Do NOT pick these already-covered topics: {json.dumps(used, ensure_ascii=False)}")
+
+
+def pick_topics(trends, niche, used, n_long, n_shorts):
+    data = llm_json(f"""You run a viral tech & AI news YouTube channel. Today's trending items:
+{trends_text(trends)}
+
+{topic_rules(niche, used)}
+
+Pick {n_long} story for a long video and {n_shorts} DIFFERENT stories for Shorts (all different from each other).
+Return JSON only:
+{{"long": [{{"topic": "short topic name", "search_query": "3-6 word news search query", "angle": "why viewers care"}}],
+ "shorts": [{{"topic": "...", "search_query": "...", "angle": "..."}}]}}""", required=("long", "shorts"))
+    return data["long"][:n_long], data["shorts"][:n_shorts]
+
+
+def story_context(query, n=10):
+    """Recent headlines from several outlets: the fact base for the script and the 'Sources' list."""
+    try:
+        items = rss_items("https://news.google.com/rss/search?q=" + requests.utils.quote(f"{query} when:3d")
+                          + "&" + L()["news"])[:n]
+    except Exception as e:
+        log(f"  news search failed: {e}")
+        return []
+    out = []
+    for i in items:
+        src = (i.findtext("source") or "").strip()
+        title = (i.findtext("title") or "").strip()
+        if src and title.endswith(f" - {src}"):
+            title = title[: -len(src) - 3]
+        src = re.sub(r"\.com$", "", src.split(" - ")[0].split(" | ")[0]).strip()  # "ABC News - Breaking News..." -> "ABC News"
+        out.append({"headline": title, "source": src, "date": (i.findtext("pubDate") or "")[:16]})
+    return out
+
+
+def yt_suggestions(q, hl=None):
+    try:
+        r = requests.get("https://suggestqueries.google.com/complete/search",
+                         params={"client": "firefox", "ds": "yt", "q": q, "hl": hl or L()["suggest_hl"]}, headers=UA, timeout=20)
+        return r.json()[1] if r.ok else []
+    except Exception:
+        return []
+
+
+def keyword_research(query):
+    """Real YouTube search phrases for the topic (free autocomplete endpoint)."""
+    words = query.split()
+    seen, out = set(), []
+    seeds = [query, " ".join(words[:2]), " ".join(words[:3]) + " news"]
+    if LANG == "hi":
+        seeds += [" ".join(words[:2]) + " hindi"]
+    for seed in seeds:
+        for s in yt_suggestions(seed) or yt_suggestions(seed, "en"):  # Indians mostly type tech searches in English
+            if s.lower() not in seen:
+                seen.add(s.lower())
+                out.append(s)
+    return out[:25]
+
+
+def facts_block(ctx, kw):
+    heads = "\n".join(f"- {c['headline']} ({c['source']}, {c['date']})" for c in ctx) or "- (no extra headlines found)"
+    return f"SOURCE HEADLINES:\n{heads}\n\nYOUTUBE SEARCH SUGGESTIONS:\n{', '.join(kw) or '(none)'}"
 
 
 def expand(text, lo, hi):
     return llm_json(f"""Expand this YouTube voiceover script to {lo}-{hi} words. Keep the same topic, facts, hook,
 tone and ending. Add depth (context, implications, what it means for viewers) without inventing numbers,
-quotes or dates. No headings, no stage directions, no emojis.
+quotes or dates. No headings, no stage directions, no emojis. Keep the same language and style.
+{lang_rules()}
 
 SCRIPT:
 {text}
@@ -248,70 +373,103 @@ SCRIPT:
 Return JSON only: {{"script": "..."}}""", required=("script",))["script"]
 
 
-def plan_long(trends, niche, used):
+def write_long(pick, ctx, kw):
     lo, hi = LENGTHS["long"]
-    meta = llm_json(f"""You write a viral tech & AI news YouTube channel. Today's trending items:
-{trends_text(trends)}
+    meta = llm_json(f"""Write a {lo}-{hi} word (about 4-5 minute) YouTube video script for {CHANNEL()}, a tech & AI news channel.
+STORY: {pick['topic']} - angle: {pick.get('angle', '')}
 
-{topic_rules(niche, used)}
+{facts_block(ctx, kw)}
 
-Pick ONE story for a {lo}-{hi} word (about 4 minute) video. Structure as 5-7 sections in this order:
-hook (1-2 sentences that make people stay), why it is trending now, background, key details,
-reactions / what people are saying, what happens next and what it means for viewers,
-closing (ask a comment question + ask to subscribe to {os.environ.get('CHANNEL_NAME', 'TechPulse')}).
+Structure as 6-8 sections in this order: hook (1-2 sentences), why it is trending now, background,
+key details, reactions / what people are saying (attribute to outlets), what happens next,
+what it means for YOU the viewer, closing (one comment question + ask to subscribe to {CHANNEL()}).
 Count words carefully: total under {lo - 30} words is too short.
 {RULES}
+{SEO_RULES}
+{lang_rules()}
 
 Return JSON only:
 {{"topic": "short topic name",
- "title": "search-friendly curiosity title, main keyword first, max 70 chars, no clickbait lies",
- "description": "first sentence has the main keyword; 4-6 sentences total, natural related search terms",
- "tags": ["12-15 tags, mix broad and specific"],
+ "primary_keyword": "...",
+ "title": "max 70 chars",
+ "description_hook": "...",
+ "summary": "...",
+ "key_points": ["3-5 short bullet points of what the video covers"],
+ "tags": ["..."],
+ "hashtags": ["...", "...", "..."],
  "thumbnail_text": "2-4 punchy words for the thumbnail",
  "pinned_comment": "one engaging question for viewers",
- "sections": [{{"heading": "chapter title, 2-5 words", "text": "spoken text"}}],
+ "sections": [{{"heading": "chapter title, 2-5 words",
+               "fact": "on-screen fact card for this section, max 7 words, only a sourced fact or empty string",
+               "text": "spoken text"}}],
  "keywords": ["12 image search terms"]}}""", required=("topic", "title", "sections", "keywords"))
     for _ in range(2):
         n = sum(len(s["text"].split()) for s in meta["sections"])
         if n >= lo * 0.92:
             break
         log(f"[long] script only {n} words, expanding")
-        fixed = llm_json(f"""Expand these video script sections to {lo}-{hi} words in total. Keep headings, order,
-facts, hook and ending. Add depth without inventing numbers, quotes or dates.
+        fixed = llm_json(f"""Expand these video script sections to {lo}-{hi} words in total. Keep headings, facts,
+order, hook and ending. Add depth without inventing numbers, quotes or dates. Keep the same language and style.
+{lang_rules()}
 
 {json.dumps(meta['sections'], ensure_ascii=False)}
 
-Return JSON only: {{"sections": [{{"heading": "...", "text": "..."}}]}}""", required=("sections",))
+Return JSON only: {{"sections": [{{"heading": "...", "fact": "...", "text": "..."}}]}}""", required=("sections",))
         meta["sections"] = fixed["sections"]
     meta["script"] = " ".join(s["text"].strip() for s in meta["sections"])
     return meta
 
 
-def plan_shorts(trends, niche, used, n):
+def write_short(pick, ctx, kw):
     lo, hi = LENGTHS["short"]
-    data = llm_json(f"""You write viral tech & AI news YouTube Shorts. Today's trending items:
-{trends_text(trends)}
+    meta = llm_json(f"""Write a YouTube Short script ({lo}-{hi} words, 40-50 seconds) for {CHANNEL()}, a tech & AI news channel.
+STORY: {pick['topic']} - angle: {pick.get('angle', '')}
 
-{topic_rules(niche, used)}
+{facts_block(ctx, kw)}
 
-Pick {n} DIFFERENT stories (one Short each). Each script {lo}-{hi} words (40-55 seconds):
-first sentence is a scroll-stopping hook, short punchy sentences, end with a question for comments.
+Shorts rules: first sentence is the hook; one fast idea per sentence; build to the most surprising fact;
+the LAST sentence must flow naturally back into the first sentence so the Short loops seamlessly
+(looping replays boost Shorts), and include one comment question just before it.
 {RULES}
+{SEO_RULES}
+{lang_rules()}
+For Shorts the title must be max 55 characters.
 
 Return JSON only:
-{{"shorts": [{{"topic": "short topic name",
-  "title": "curiosity title, main keyword first, max 60 chars",
-  "description": "2-3 sentences, first one has the main keyword",
-  "tags": ["8-12 tags"],
-  "pinned_comment": "one engaging question",
-  "script": "...",
-  "keywords": ["5 image search terms"]}}]}}""", required=("shorts",))
-    shorts = data["shorts"][:n]
-    for s in shorts:
-        if len(s["script"].split()) < lo * 0.9:
-            log(f"[short] '{s['topic']}' too short, expanding")
-            s["script"] = expand(s["script"], lo, hi)
-    return shorts
+{{"topic": "short topic name",
+ "primary_keyword": "...",
+ "title": "max 55 chars",
+ "hook_text": "max 6 punchy words shown on screen in the first 3 seconds",
+ "description_hook": "...",
+ "summary": "...",
+ "tags": ["..."],
+ "hashtags": ["...", "...", "..."],
+ "pinned_comment": "one engaging question",
+ "facts": ["2-3 on-screen fact cards, max 7 words each, only sourced facts"],
+ "script": "...",
+ "keywords": ["6 image search terms"]}}""", required=("topic", "title", "script", "keywords"))
+    if len(meta["script"].split()) < lo * 0.9:
+        log(f"[short] '{meta['topic']}' too short, expanding")
+        meta["script"] = expand(meta["script"], lo, hi)
+    return meta
+
+
+def plan_videos(trends, niche, used, n_long, n_shorts):
+    longs, shorts = pick_topics(trends, niche, used, n_long, n_shorts)
+    jobs = []
+    for kind, picks, writer in (("long", longs, write_long), ("short", shorts, write_short)):
+        for p in picks:
+            try:
+                query = p.get("search_query") or p["topic"]
+                ctx, kw = story_context(query), keyword_research(query)
+                log(f"[{kind}] '{p['topic']}': {len(ctx)} source headlines, {len(kw)} search suggestions")
+                meta = writer(p, ctx, kw)
+                meta["sources"] = sorted({c["source"] for c in ctx if c["source"]})[:8]
+                meta["search_suggestions"] = kw
+                jobs.append((kind, meta))
+            except Exception as e:
+                log(f"[{kind}] script failed for '{p.get('topic')}': {e}")
+    return jobs
 
 
 # ---------- 3. Voice + captions ----------
@@ -327,16 +485,52 @@ async def _tts(text, voice, rate, mp3):
     return words
 
 
-def tts(text, mp3, kind):
+VOICES = {"male": "en-US-AndrewMultilingualNeural", "female": "en-US-AvaMultilingualNeural"}
+CHARACTERS = {"male": "max", "female": "nova"}
+
+
+def pick_voice(i):
+    """Alternate male/female across videos and days, so the channel has two recurring hosts."""
+    genders = [g.strip() for g in os.environ.get("HOSTS", "male,female").split(",") if g.strip() in VOICES]
+    g = genders[(datetime.date.today().toordinal() + i + (1 if LANG == "hi" else 0)) % len(genders)]
+    return {"gender": g, "voice": L()["voices"][g], "character": CHARACTERS[g]}
+
+
+def tts(text, mp3, kind, voice=None):
     for attempt in range(4):
         try:
-            return asyncio.run(_tts(text, os.environ.get("TTS_VOICE", "en-US-AndrewMultilingualNeural"),
+            return asyncio.run(_tts(text, voice or os.environ.get("TTS_VOICE", VOICES["male"]),
                                     os.environ.get("TTS_RATE", "+10%"), mp3))
         except Exception as e:
             if attempt == 3:
                 raise
             log(f"[{kind}] TTS failed ({e}), retrying")
             time.sleep(10 * (attempt + 1))
+
+
+def rhubarb_exe():
+    if os.environ.get("RHUBARB"):
+        return os.environ["RHUBARB"]
+    found = sorted((ROOT / "tools" / "bin").glob("Rhubarb-Lip-Sync-*/rhubarb*"))
+    return str(found[0]) if found else None
+
+
+def lipsync(work, script):
+    """Mouth shapes (A-H, X) timed to the voice, via Rhubarb Lip Sync. Empty list = fall back to loudness."""
+    exe = rhubarb_exe()
+    if not exe:
+        return []
+    try:
+        ff(["-i", "voice.mp3", "-ac", "1", "-ar", "16000", "voice.wav"], work)
+        (work / "dialog.txt").write_text(script, encoding="utf-8")
+        rec = L()["lipsync"]
+        dialog = ["--dialogFile", str(work / "dialog.txt")] if rec == "pocketSphinx" else []
+        out = subprocess.run([exe, "-f", "json", "-r", rec, "--extendedShapes", "GHX", *dialog, str(work / "voice.wav")],
+                             capture_output=True, text=True, timeout=900, check=True)
+        return [[c["start"], c["end"], c["value"]] for c in json.loads(out.stdout)["mouthCues"]]
+    except Exception as e:
+        log(f"  lip sync skipped: {str(e)[:120]}")
+        return []
 
 
 def ass_time(t):
@@ -377,15 +571,23 @@ def audio_duration(mp3):
     return int(h) * 3600 + int(m) * 60 + float(s)
 
 
-def chapters(sections, words):
-    """YouTube chapters: first at 0:00, at least 3, each at least 10s apart."""
+def section_times(sections, words):
+    """Start time of every script section, mapped through the voice's word timings."""
     total = sum(len(s["text"].split()) for s in sections) or 1
     out, cum = [], 0
     for s in sections:
         t = 0.0 if not out else words[min(len(words) - 1, round(cum / total * len(words)))][0]
-        if not out or t - out[-1][0] >= 10:
-            out.append((t, s["heading"].strip()))
+        out.append((t, s["heading"].strip()))
         cum += len(s["text"].split())
+    return out
+
+
+def chapters(sections, words):
+    """YouTube chapters: first at 0:00, at least 3, each at least 10s apart."""
+    out = []
+    for t, h in section_times(sections, words):
+        if not out or t - out[-1][0] >= 10:
+            out.append((t, h))
     return out if len(out) >= 3 else []
 
 
@@ -437,7 +639,8 @@ def wikimedia_search(query):
             continue
         name = p["title"].removeprefix("File:")
         score = len(words & set(re.findall(r"[a-z0-9]+", name.lower())))
-        if words and score == 0:  # file name shares no word with the query: usually off-topic
+        # Too few shared words = usually off-topic (and showing the wrong real person is misleading).
+        if words and score < min(2, len(words)):
             continue
         md = ii.get("extmetadata", {})
         artist = html.unescape(re.sub(r"<[^>]+>", "", md.get("Artist", {}).get("value", "Unknown"))).strip()[:60]
@@ -552,8 +755,9 @@ def build_video(work, clips, duration, fmt):
 def make_thumbnail(work, text, at, image=None):
     """1280x720 JPG: main-subject photo (or a video frame) darkened + big yellow headline + channel tag."""
     channel = os.environ.get("CHANNEL_NAME", "TechPulse").upper()
-    styles = (f"Style: Head,{FONT},172,&H0000E5FF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,10,6,4,70,460,0,1\n"
-              f"Style: Tag,{FONT},52,&H00FFFFFF,&H000000FF,&H00000000,&HC0E5A000,0,0,0,0,100,100,3,0,3,14,0,7,50,50,40,1")
+    # Brand colors (ASS is &HAABBGGRR): neon cyan #2BE4FF headline, navy #070D1A tag box.
+    styles = (f"Style: Head,{FONT},172,&H00FFE42B,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,10,6,4,70,460,0,1\n"
+              f"Style: Tag,{FONT},52,&H00FFFFFF,&H000000FF,&H001A0D07,&H001A0D07,0,0,0,0,100,100,3,0,3,14,0,7,50,50,40,1")
     clean = re.sub(r"[{}\\]", "", text).upper()
     (work / "thumb.ass").write_text(ASS_HEAD.format(w=1280, h=720, styles=styles)
                                     + f"Dialogue: 0,0:00:00.00,9:00:00.00,Head,,0,0,0,,{clean}\n"
@@ -571,8 +775,9 @@ def make_thumbnail(work, text, at, image=None):
     return work / "thumb.jpg"
 
 
-def render_motion(work, kind, words, duration, clips, title, sections):
-    """Animated style (Remotion): mascot, kinetic captions, headline cards. Assets served from the work folder."""
+def render_motion(work, kind, words, duration, clips, title, sections, host=None, mouth=(), facts=()):
+    """Animated style (Remotion): presenter character, kinetic captions, headline/fact cards.
+    Assets are served from the work folder."""
     fmt = FORMATS[kind]
     fps, total = 30, duration + 0.8
     images = [c for c in clips if c["is_image"]]
@@ -582,11 +787,15 @@ def render_motion(work, kind, words, duration, clips, title, sections):
         seg = total / n
         scenes = [{"start": round(i * seg, 3), "end": round((i + 1) * seg, 3), "src": images[i % len(images)]["path"].name}
                   for i in range(n)]
-    shutil.copy(ROOT / "fonts" / "Anton-Regular.ttf", work / "Anton-Regular.ttf")
+    for font in ("Anton-Regular.ttf", "Mukta-ExtraBold.ttf"):  # Mukta covers Devanagari (Hindi)
+        shutil.copy(ROOT / "fonts" / font, work / font)
+    shutil.copy(ROOT / "assets" / "logo.jpg", work / "logo.jpg")
     props = {"kind": kind, "width": fmt["w"], "height": fmt["h"], "fps": fps, "durationInFrames": round(total * fps),
              "audio": "voice.mp3", "words": [[round(a, 3), round(b, 3), w] for a, b, w in words], "scenes": scenes,
              "sections": [{"start": round(t, 2), "heading": h} for t, h in sections], "title": title,
-             "channel": os.environ.get("CHANNEL_NAME", "TechPulse").upper()}
+             "channel": os.environ.get("CHANNEL_NAME", "TechPulse").upper(),
+             "character": (host or {}).get("character", "max"), "mouth": list(mouth), "ui": L()["ui"], "lang": LANG,
+             "facts": [{"t": round(t, 2), "text": x} for t, x in facts]}
     (work / "props.json").write_text(json.dumps(props, ensure_ascii=False), encoding="utf-8")
     npx = shutil.which("npx") or "npx"
     subprocess.run([npx, "remotion", "render", "src/index.jsx", "Long" if kind == "long" else "Short",
@@ -595,48 +804,77 @@ def render_motion(work, kind, words, duration, clips, title, sections):
     return work / "final.mp4"
 
 
-def make_video(work, kind, script, keywords, title="", sections=()):
+def fact_times(meta, kind, words, duration, chapter_list):
+    """When each on-screen fact card appears: long = 2s into its section, short = spread through the video."""
+    if kind == "long":
+        heads = {h: t for t, h in chapter_list}
+        return [(heads[s["heading"].strip()] + 2.0, s["fact"].strip()) for s in meta.get("sections", [])
+                if s.get("fact", "").strip() and s["heading"].strip() in heads]
+    facts = [f.strip() for f in meta.get("facts", []) if f.strip()][:3]
+    return [(duration * (i + 1) / (len(facts) + 1), f) for i, f in enumerate(facts)]
+
+
+def make_video(work, kind, meta, host=None):
     fmt = FORMATS[kind]
     work.mkdir(parents=True, exist_ok=True)
-    log(f"[{kind}] voice")
-    words = tts(script, work / "voice.mp3", kind)
+    host = host or pick_voice(0)
+    log(f"[{kind}] voice ({host['gender']} host)")
+    words = tts(meta["script"], work / "voice.mp3", kind, host["voice"])
     write_ass(words, work / "subs.ass", fmt)
     duration = audio_duration(work / "voice.mp3")
     log(f"[{kind}] voice {duration:.0f}s, downloading visuals")
-    clips = fetch_clips(keywords, work, fmt, need=min(30, round(duration / fmt["clip_secs"])))
+    clips = fetch_clips(meta.get("keywords", []), work, fmt, need=min(40, round(duration / fmt["clip_secs"])))
     log(f"[{kind}] {len(clips)} clips ({sum(c['is_image'] for c in clips)} photos), rendering")
     credits = [c["credit"] for c in clips if c["credit"]]
+    sections = meta.get("sections") or []
+    chapter_list = chapters(sections, words) if sections else []      # for the description (YouTube rules)
+    section_list = section_times(sections, words) if sections else []  # for on-screen cards
     video = None
     if os.environ.get("RENDER_STYLE", "motion") == "motion":
         try:
-            video = render_motion(work, kind, words, duration, clips, title, chapters(sections, words) if sections else [])
+            mouth = lipsync(work, meta["script"])
+            log(f"[{kind}] lip sync: {len(mouth)} mouth shapes")
+            title = meta.get("hook_text") or meta["title"]
+            video = render_motion(work, kind, words, duration, clips, title, section_list, host, mouth,
+                                  fact_times(meta, kind, words, duration, section_list))
         except Exception as e:  # never lose a day's video: fall back to the classic slideshow
             log(f"[{kind}] animated render failed ({str(e)[:150]}), using classic style")
     if video is None:
         video = build_video(work, clips, duration, fmt)
     first_photo = next((c["path"] for c in clips if c["is_image"]), None)
-    return {"video": video, "words": words, "duration": duration, "credits": credits, "first_photo": first_photo}
+    return {"video": video, "words": words, "duration": duration, "credits": credits, "first_photo": first_photo,
+            "chapters": chapter_list}
 
 
 # ---------- 6. YouTube ----------
-_YT = None
+_YT = {}
+
+
+def token_file():
+    """Hindi can upload to its own channel: token_hi.json (or secret YT_TOKEN_JSON_HI). Otherwise the main channel."""
+    if LANG != "en" and ((ROOT / f"token_{LANG}.json").exists() or os.environ.get(f"YT_TOKEN_JSON_{LANG.upper()}")
+                         or AUTH_MODE):
+        return ROOT / f"token_{LANG}.json", f"YT_TOKEN_JSON_{LANG.upper()}"
+    return ROOT / "token.json", "YT_TOKEN_JSON"
+
+
+AUTH_MODE = False
 
 
 def youtube_client():
-    global _YT
-    if _YT:
-        return _YT
+    tok, tok_var = token_file()
+    if tok.name in _YT:
+        return _YT[tok.name]
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
     from googleapiclient.discovery import build
 
     os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")  # user may untick optional scopes on consent screen
-    tok = ROOT / "token.json"
     # Cloud runner: credentials come from encrypted GitHub Secrets, written to git-ignored files at runtime.
-    for path, var in ((tok, "YT_TOKEN_JSON"), (ROOT / "client_secret.json", "YT_CLIENT_SECRET_JSON")):
+    for path, var in ((tok, tok_var), (ROOT / "client_secret.json", "YT_CLIENT_SECRET_JSON")):
         if not path.exists() and os.environ.get(var):
-            path.write_text(os.environ[var].lstrip("﻿"), encoding="utf-8")  # PowerShell pipes add a BOM
+            path.write_text(os.environ[var].lstrip("\ufeff"), encoding="utf-8")  # PowerShell pipes add a BOM
     creds = Credentials.from_authorized_user_file(str(tok), SCOPES) if tok.exists() else None
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
@@ -645,21 +883,53 @@ def youtube_client():
             flow = InstalledAppFlow.from_client_secrets_file(str(ROOT / "client_secret.json"), SCOPES)
             creds = flow.run_local_server(port=0)
         tok.write_text(creds.to_json())
-    _YT = build("youtube", "v3", credentials=creds)
-    return _YT
+    _YT[tok.name] = build("youtube", "v3", credentials=creds)
+    return _YT[tok.name]
+
+
+def hashtags(meta, short, topic):
+    tags = [re.sub(r"[^\w]", "", h.lstrip("#")) for h in meta.get("hashtags", [])]
+    tags = [t for t in tags if t] or ["TechNews", "AI", re.sub(r"\W", "", topic.title())]
+    tags = list(dict.fromkeys(tags))[:3]
+    return " ".join(f"#{t}" for t in (["Shorts"] + tags[:2] if short else tags))
+
+
+def clean_tags(meta, limit=480):
+    """YouTube allows 500 characters of tags in total; '<' '>' are rejected."""
+    out, seen, used = [], set(), 0
+    for t in [meta.get("primary_keyword", "")] + meta.get("tags", []):  # raw suggestions are often off-topic
+        t = re.sub(r"[<>#]", "", str(t)).strip()
+        if not t or t.lower() in seen or len(t) > 60:
+            continue
+        cost = len(t) + (2 if " " in t else 0) + 1
+        if used + cost > limit:
+            break
+        seen.add(t.lower())
+        out.append(t)
+        used += cost
+    return out
 
 
 def description(meta, short, topic, credits, chapter_list=()):
+    """Search-friendly layout: keyword sentence first (shown in search), summary, chapters, sources, hashtags."""
     channel = os.environ.get("CHANNEL_NAME", "TechPulse")
-    tag = re.sub(r"\W", "", topic.title())
-    parts = [meta["description"].strip()]
+    tx = L()["text"]
+    first = meta.get("description_hook") or meta.get("description", "")
+    parts = [first.strip()]
+    if meta.get("summary"):
+        parts.append(meta["summary"].strip())
+    if meta.get("key_points") and not short:
+        parts.append(tx["in_video"] + "\n" + "\n".join(f"- {p}" for p in meta["key_points"][:5]))
     if chapter_list:
         parts.append("Chapters:\n" + "\n".join(f"{ts(t)} {h}" for t, h in chapter_list))
-    parts.append(f"Subscribe to {channel} for daily tech & AI news.")
-    tail = ("#Shorts " if short else "") + f"#TechNews #AI #{tag}"
-    head = "\n\n".join(parts)
+    if meta.get("sources"):
+        parts.append(f"{tx['sources']}: " + ", ".join(meta["sources"]))
+    parts.append(tx["subscribe"].format(c=channel) + "\n" + (tx["more_short"] if short else tx["more_long"]))
+    parts.append(tx["ai"])
+    tail = hashtags(meta, short, topic)
+    head = "\n\n".join(p for p in parts if p)
     if credits:
-        block = "Image credits (Wikimedia Commons / stock):\n"
+        block = tx["credits"] + "\n"
         budget = 4800 - len(head) - len(tail)
         for c in credits:
             if len(block) + len(c) + 1 > budget:
@@ -672,13 +942,12 @@ def description(meta, short, topic, credits, chapter_list=()):
 def upload(path, title, desc, tags, short):
     from googleapiclient.http import MediaFileUpload
 
-    title = title.strip()
-    if short and "#shorts" not in title.lower():
-        title = title[:90] + " #Shorts"
+    # Shorts are detected from the vertical format; #Shorts lives in the description, keeping the title clean.
+    title = re.sub(r"\s*#shorts\b", "", title.strip().strip('"'), flags=re.I)[:100]
     body = {
-        "snippet": {"title": title[:100], "description": desc, "tags": tags[:15],
-                    "categoryId": os.environ.get("YT_CATEGORY", "28"), "defaultLanguage": "en",
-                    "defaultAudioLanguage": "en"},
+        "snippet": {"title": title, "description": desc, "tags": tags,
+                    "categoryId": os.environ.get("YT_CATEGORY", "28"), "defaultLanguage": LANG,
+                    "defaultAudioLanguage": LANG},
         "status": {"privacyStatus": os.environ.get("YT_PRIVACY", "public"), "selfDeclaredMadeForKids": False,
                    "containsSyntheticMedia": True},
     }
@@ -724,7 +993,7 @@ def upload_existing(work):
     meta = json.loads((work / "meta.json").read_text(encoding="utf-8"))
     short = "_short_" in work.name
     desc = (work / "description.txt").read_text(encoding="utf-8")
-    vid = upload(work / "final.mp4", meta["title"], desc, meta.get("tags", []), short)
+    vid = upload(work / "final.mp4", meta["title"], desc, clean_tags(meta), short)
     log(f"uploaded https://youtu.be/{vid}")
     thumb = work / "thumb.jpg"
     after_upload(vid, thumb if thumb.exists() else None, meta.get("pinned_comment"))
@@ -784,7 +1053,8 @@ def days_ago(n):
 def used_topics():
     if sb_on():
         since = days_ago(14)
-        return [r["topic"] for r in sb_rest("GET", f"videos?select=topic&created_at=gte.{since}") if r.get("topic")]
+        return [r["topic"] for r in sb_rest("GET", f"videos?select=topic&lang=eq.{LANG}&created_at=gte.{since}")
+                if r.get("topic")]
     history = json.loads(HISTORY.read_text(encoding="utf-8")) if HISTORY.exists() else []
     return [h["topic"] for h in history[-80:] if h.get("topic")]
 
@@ -805,7 +1075,7 @@ def record(work, kind, meta, desc, duration, vid, thumb):
     preview = sb_upload(make_preview(work, kind), f"{prefix}/preview.mp4", "video/mp4")
     thumb_path = sb_upload(thumb, f"{prefix}/thumb.jpg", "image/jpeg") if thumb else None
     sb_rest("POST", "videos", json={
-        "kind": kind, "topic": meta["topic"], "title": meta["title"], "description": desc,
+        "kind": kind, "lang": LANG, "topic": meta["topic"], "title": meta["title"], "description": desc,
         "tags": meta.get("tags", [])[:15], "status": "uploaded" if vid else "rendered", "youtube_id": vid,
         "privacy": os.environ.get("YT_PRIVACY", "private") if vid else None,
         "preview_path": preview, "thumb_path": thumb_path, "duration_s": round(duration, 1),
@@ -814,9 +1084,11 @@ def record(work, kind, meta, desc, duration, vid, thumb):
 
 
 def publish_pending():
-    rows = sb_rest("GET", "videos?select=id,youtube_id,title,meta&publish_requested=is.true&status=neq.published"
+    global LANG
+    rows = sb_rest("GET", "videos?select=id,youtube_id,title,meta,lang&publish_requested=is.true&status=neq.published"
                           "&youtube_id=not.is.null")
     for row in rows:
+        LANG = row.get("lang") or "en"  # pick that language's channel login
         try:
             youtube_client().videos().update(part="status", body={"id": row["youtube_id"], "status": {
                 "privacyStatus": "public", "selfDeclaredMadeForKids": False, "containsSyntheticMedia": True}}).execute()
@@ -832,15 +1104,21 @@ def publish_pending():
 
 
 def update_stats():
-    rows = sb_rest("GET", "videos?select=id,youtube_id&youtube_id=not.is.null")
-    for i in range(0, len(rows), 50):
-        chunk = {r["youtube_id"]: r["id"] for r in rows[i:i + 50]}
-        resp = youtube_client().videos().list(part="statistics,status", id=",".join(chunk)).execute()
-        for v in resp.get("items", []):
-            s = v.get("statistics", {})
-            sb_rest("PATCH", f"videos?id=eq.{chunk[v['id']]}", json={
-                "privacy": v["status"]["privacyStatus"],
-                "stats": {k: int(s.get(k, 0)) for k in ("viewCount", "likeCount", "commentCount")}})
+    global LANG
+    rows = sb_rest("GET", "videos?select=id,youtube_id,lang&youtube_id=not.is.null")
+    current = LANG
+    for lang in sorted({r.get("lang") or "en" for r in rows}):
+        LANG = lang
+        mine = [r for r in rows if (r.get("lang") or "en") == lang]
+        for i in range(0, len(mine), 50):
+            chunk = {r["youtube_id"]: r["id"] for r in mine[i:i + 50]}
+            resp = youtube_client().videos().list(part="statistics,status", id=",".join(chunk)).execute()
+            for v in resp.get("items", []):
+                s = v.get("statistics", {})
+                sb_rest("PATCH", f"videos?id=eq.{chunk[v['id']]}", json={
+                    "privacy": v["status"]["privacyStatus"],
+                    "stats": {k: int(s.get(k, 0)) for k in ("viewCount", "likeCount", "commentCount")}})
+    LANG = current
     log(f"stats updated for {len(rows)} videos")
 
 
@@ -864,15 +1142,19 @@ def main():
     ap.add_argument("--shorts", type=int, help="number of Shorts (default 1)")
     ap.add_argument("--no-upload", action="store_true")
     ap.add_argument("--auth", action="store_true")
+    ap.add_argument("--lang", choices=sorted(LANGS), default="en", help="video language (en or hi)")
     ap.add_argument("--upload-dir", help="upload an already-rendered video folder")
     ap.add_argument("--publish-pending", action="store_true", help="make app-approved videos public")
     ap.add_argument("--stats", action="store_true", help="refresh YouTube stats in Supabase")
     ap.add_argument("--cleanup", action="store_true", help=f"delete Supabase records/files older than {KEEP_DAYS} days")
     args = ap.parse_args()
     load_env()
+    global LANG, AUTH_MODE
+    LANG = args.lang
     if args.auth:
+        AUTH_MODE = True
         youtube_client()
-        log("YouTube auth OK, token.json saved")
+        log(f"YouTube auth OK, {token_file()[0].name} saved")
         return
     if args.upload_dir:
         upload_existing(args.upload_dir)
@@ -889,23 +1171,18 @@ def main():
     history = json.loads(HISTORY.read_text(encoding="utf-8")) if HISTORY.exists() else []
     used = used_topics()
     niche = os.environ.get("NICHE", "technology and AI")
-    run_dir = OUT / f"{datetime.datetime.now():%Y-%m-%d_%H%M}"
+    run_dir = OUT / f"{datetime.datetime.now():%Y-%m-%d_%H%M}_{LANG}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    log("Fetching trends")
-    trends = fetch_trends(os.environ.get("GEO", "US"))
+    log(f"Fetching trends ({L()['name']}, {L()['geo']})")
+    trends = fetch_trends(L()["geo"])
     if not trends:
         raise RuntimeError("No trends from any source")
 
-    jobs = []
-    if args.long:
-        log("Writing long script")
-        m = plan_long(trends, niche, used)
-        jobs.append(("long", m))
-        used.append(m["topic"])
-    if args.shorts:
-        log(f"Writing {args.shorts} Short script(s)")
-        jobs += [("short", m) for m in plan_shorts(trends, niche, used, args.shorts)]
+    log(f"Picking stories: {args.long} long, {args.shorts} Shorts")
+    jobs = plan_videos(trends, niche, used, args.long, args.shorts)
+    if not jobs:
+        raise SystemExit("no scripts written")
 
     failures = 0
     for i, (kind, meta) in enumerate(jobs):
@@ -914,10 +1191,10 @@ def main():
             work.mkdir(parents=True, exist_ok=True)
             (work / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
             log(f"=== {kind}: {meta['topic']} | {meta['title']}")
-            r = make_video(work, kind, meta["script"], meta.get("keywords", []), meta["title"],
-                           meta.get("sections", []))
-            chap = chapters(meta["sections"], r["words"]) if kind == "long" else []
-            desc = description(meta, kind == "short", meta["topic"], r["credits"], chap)
+            host = pick_voice(i)
+            meta["host"] = host
+            r = make_video(work, kind, meta, host)
+            desc = description(meta, kind == "short", meta["topic"], r["credits"], r["chapters"])
             (work / "description.txt").write_text(desc, encoding="utf-8")
             thumb = make_thumbnail(work, meta.get("thumbnail_text") or meta["topic"], r["duration"] * 0.25,
                                    r["first_photo"]) if kind == "long" else None
@@ -926,7 +1203,7 @@ def main():
                      "title": meta["title"], "video": str(r["video"])}
             vid = None
             if not args.no_upload:
-                vid = upload(r["video"], meta["title"], desc, meta.get("tags", []), kind == "short")
+                vid = upload(r["video"], meta["title"], desc, clean_tags(meta), kind == "short")
                 log(f"[{kind}] uploaded https://youtu.be/{vid}")
                 # YouTube rejects comments on private videos; publish_pending() posts it once public.
                 public_now = os.environ.get("YT_PRIVACY", "private") == "public"
