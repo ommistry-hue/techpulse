@@ -157,3 +157,7 @@ insert into public.settings (key, value) values ('learned_rules', '{}') on confl
 -- When YouTube rejected/removed a video (set once; drives the 14-day safety pause)
 alter table public.insights add column if not exists health_at timestamptz;
 update public.insights set health_at = updated_at where health is not null and health_at is null;
+
+-- Automatic part-2 Shorts for breakout Shorts (set only by the automation)
+alter table public.run_requests add column if not exists followup text;
+insert into public.settings (key, value) values ('followups', '{}') on conflict (key) do nothing;

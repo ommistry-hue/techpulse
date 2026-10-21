@@ -8,9 +8,9 @@ import os
 import subprocess
 import time
 
-# (UTC time, language, long videos, Shorts) - same plan as before: 4 scheduled uploads per language per day
+# (UTC time, language, long videos, Shorts): EN 1 long + 3 Shorts, HI 1 long + 4 Shorts (India = biggest Shorts market)
 SLOTS = [("12:17", "en", 1, 1), ("16:43", "en", 0, 1), ("21:23", "en", 0, 1),
-         ("01:33", "hi", 0, 1), ("07:47", "hi", 0, 1), ("13:37", "hi", 1, 1)]
+         ("01:33", "hi", 0, 1), ("07:47", "hi", 0, 1), ("10:03", "hi", 0, 1), ("13:37", "hi", 1, 1)]
 BREAKING = [f"{h:02d}:29" for h in range(0, 24, 3)]   # breaking-news check every 3 hours
 CATCH_UP = datetime.timedelta(hours=3)                # a late slot still runs within 3 h; older ones are skipped
 BREAKING_WINDOW = datetime.timedelta(minutes=45)

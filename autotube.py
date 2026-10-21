@@ -26,7 +26,7 @@ UA = {"User-Agent": "Mozilla/5.0 (TechPulse trend fetcher)"}
 
 FORMATS = {
     "long": dict(w=1920, h=1080, orientation="landscape", font=104, align=2, margin_v=90, per_line=5, clip_secs=6),
-    "short": dict(w=1080, h=1920, orientation="portrait", font=150, align=5, margin_v=0, per_line=3, clip_secs=4),  # visual change every ~4s holds Shorts viewers
+    "short": dict(w=1080, h=1920, orientation="portrait", font=150, align=5, margin_v=0, per_line=3, clip_secs=2),  # visual change every ~2s holds Shorts viewers
 }
 FONT = "Anton"  # bundled in fonts/ (OFL) so captions look the same on Windows and the Linux cloud runner
 
@@ -43,7 +43,7 @@ LANGS = {
            "lipsync": "pocketSphinx",
            "ui": {"news": "TECH NEWS", "fact": "FACT", "subscribe": "SUBSCRIBE", "like": "LIKE", "comment": "COMMENT",
                   "share": "SHARE"},
-           "follow_line": "Follow TechPulse for daily tech news.",
+           "follow_line": "Subscribe for daily AI and tech news in 30 seconds.",
            "show_intro": "This is TechPulse Daily.", "signoff": "Stay curious, stay ahead.",
            "text": {"in_video": "In this video:", "sources": "Sources",
                     "subscribe": "Subscribe to {c} for daily tech & AI news in minutes.",
@@ -56,7 +56,7 @@ LANGS = {
            "lipsync": "phonetic",  # Rhubarb's English recognizer does not know Hindi; phonetic mode is language-neutral
            "ui": {"news": "टेक न्यूज़", "fact": "तथ्य", "subscribe": "SUBSCRIBE", "like": "लाइक", "comment": "कमेंट",
                   "share": "शेयर"},
-           "follow_line": "ऐसी ही tech news के लिए TechPulse को follow करें।",
+           "follow_line": "रोज़ की AI और tech news 30 seconds में - Subscribe करें।",
            "show_intro": "आप देख रहे हैं TechPulse Daily.", "signoff": "Curious रहिए, आगे रहिए।",
            "text": {"in_video": "इस वीडियो में:", "sources": "Sources",
                     "subscribe": "रोज़ की Tech और AI news के लिए {c} को Subscribe करें।",
@@ -522,7 +522,24 @@ def write_weekly(stories):
     return meta
 
 
-SHORT_VARIANTS = {"quick": (60, 80, "25-30 seconds"), "standard": (110, 140, "40-50 seconds")}
+SHORT_VARIANTS = {"fast": (45, 60, "16-22 seconds"), "core": (70, 85, "25-30 seconds")}
+
+# Rotating Short formats: each story gets a real take, and the channel never looks like one repeated template
+# (YouTube's "inauthentic / mass-produced content" rules target identical templated videos).
+SHORT_FORMATS = {
+    "hot_take": "Open with what just happened in one punchy line, then give a clear opinion (labelled as our take) on "
+                "whether it is good or bad for normal people, backed by the sourced facts.",
+    "versus": "Frame the story as a face-off (new vs old, company vs company, price vs price) and end with a verdict.",
+    "three_things": "Three quick things to know, counted 3-2-1, the most surprising one last.",
+    "myth_fact": "Start with what most people think, then the sourced fact that flips it.",
+    "number_shock": "Open on the single most shocking sourced number or price, then explain why it matters to you.",
+    "what_it_means": "Explain in plain words what this changes for the viewer's phone, money, job or daily life.",
+}
+
+
+def pick_short_format(i):
+    names = list(SHORT_FORMATS)
+    return names[(datetime.date.today().toordinal() * 3 + i + (2 if LANG == "hi" else 0)) % len(names)]
 
 
 def pick_short_variant(i):
@@ -543,31 +560,37 @@ def pick_short_variant(i):
     return list(SHORT_VARIANTS)[(datetime.date.today().toordinal() + i) % len(SHORT_VARIANTS)]
 
 
-def write_short(pick, ctx, kw, variant="standard"):
+def write_short(pick, ctx, kw, variant="core", fmt_name=None):
     lo, hi, secs = SHORT_VARIANTS[variant]
+    fmt_name = fmt_name or random.choice(list(SHORT_FORMATS))
     meta = llm_json(f"""Write a YouTube Short script ({lo}-{hi} words, {secs}) for {CHANNEL()}, a tech & AI news channel.
 STORY: {pick['topic']} - angle: {pick.get('angle', '')}
 
 {facts_block(ctx, kw)}
 
-Shorts rules: first sentence is the hook; one fast idea per sentence; build to the most surprising fact;
-the LAST sentence must flow naturally back into the first sentence so the Short loops seamlessly
-(looping replays boost Shorts). Just before that last sentence, in this order: one comment question, then exactly this
-short line: "{L()['follow_line']}"
+FORMAT for this Short: {SHORT_FORMATS[fmt_name]}
+Shorts rules (viewers decide in the first second whether to swipe away):
+- First sentence: max 10 words, names the product/company and the stakes. Never start with "So", "Hey guys",
+  "Did you know" or the channel name.
+- One fast idea per sentence; build to the most surprising fact; include one clear take or verdict.
+- Right after the most surprising fact (about 60% in), say exactly this line: "{L()['follow_line']}"
+- No spoken comment question (it goes in the pinned comment).
+- The LAST sentence is a half-sentence that flows straight back into the first sentence, so the Short loops
+  seamlessly (example: last "...and that is exactly why" -> first "Apple just killed the iPhone mini.").
 {RULES}
 {retention_block()}
 {learned_block()}
 {SEO_RULES}
 {market_block()}
 {lang_rules()}
-For Shorts the title must be max 55 characters.
+For Shorts the title must be max 40 characters: curiosity line plus the main keyword (the feed cuts longer titles); one emoji at the end is allowed.
 {CARD_RULES} (For a Short: "card" = at most one card, or null.)
 
 Return JSON only:
 {{"topic": "short topic name",
  "primary_keyword": "...",
- "title": "max 55 chars",
- "hook_text": "max 6 punchy words shown on screen in the first 3 seconds",
+ "title": "max 40 chars",
+ "hook_text": "the key 3-5 words of the spoken first sentence, shown on screen from frame 1",
  "description_hook": "...",
  "summary": "...",
  "tags": ["..."],
@@ -578,9 +601,10 @@ Return JSON only:
  "card": null,
  "script": "...",
  "keywords": ["6 image search terms"]}}""", required=("topic", "title", "script", "keywords"))
-    if len(meta["script"].split()) < lo * 0.9:
+    if len(meta["script"].split()) < lo * 0.75:  # only when clearly too short: padding hurts Shorts
         log(f"[short] '{meta['topic']}' too short, expanding")
         meta["script"] = expand(meta["script"], lo, hi)
+    meta["format"] = fmt_name
     return meta
 
 
@@ -604,7 +628,9 @@ Check every factual claim (numbers, prices, dates, names, quotes, events, specs)
 and cards (a card that is not sourced becomes null).
 - Supported by the headlines: keep.
 - Not supported: rewrite that sentence as hedged context ("reports suggest", "not confirmed yet") or remove it.
-Keep everything else (language, tone, hook, length, structure) the same.
+Keep everything else (language, tone, hook, length, structure) the same. When hedging, name the outlet
+("The Verge reports...") instead of vague phrases. For a Short: keep the first sentence under 10 words and punchy,
+and keep the last sentence leading back into the first.
 verdict = "pass" (nothing changed), "fixed" (you corrected some sentences), or "fail" (the main story or title is not
 supported by the headlines at all, or is misleading).
 Also YouTube safety: safe = false if the video touches any of these: {SAFE_TOPICS}
@@ -669,7 +695,7 @@ def plan_videos(trends, niche, used, n_long, n_shorts, weekly=False):
     longs, shorts = pick_topics(trends, niche, used, 0 if weekly else n_long, n_shorts)
     if longs and shorts:  # funnel: the first Short teases the long video's story and sends viewers to it
         shorts[0] = {**longs[0], "teaser": True, "angle": (longs[0].get("angle", "") + ". TEASER: give the single most "
-                     "surprising fact, then say the full story is in today's TechPulse video (linked below).")}
+                     "surprising fact; around the middle say the full story is on our channel today. Keep the loop ending.")}
     for kind, picks, writer in (("long", longs, write_long), ("short", shorts, write_short)):
         for i, p in enumerate(picks):
             try:
@@ -678,7 +704,7 @@ def plan_videos(trends, niche, used, n_long, n_shorts, weekly=False):
                 log(f"[{kind}] '{p['topic']}': {len(ctx)} source headlines, {len(kw)} search suggestions")
                 if kind == "short":
                     variant = pick_short_variant(i)
-                    meta = fact_check(writer(p, ctx, kw, variant), ctx, kind)
+                    meta = fact_check(writer(p, ctx, kw, variant, pick_short_format(i)), ctx, kind)
                     meta["variant"] = variant
                 else:
                     meta = fact_check(writer(p, ctx, kw), ctx, kind)
@@ -718,7 +744,7 @@ def tts(text, mp3, kind, voice=None):
     for attempt in range(4):
         try:
             # English a little brisk for energy; Hindi at natural pace so it stays easy to follow.
-            rate = os.environ.get("TTS_RATE") or ("+0%" if LANG == "hi" else "+6%")
+            rate = os.environ.get("TTS_RATE") or ("+0%" if LANG == "hi" else "+12%" if kind == "short" else "+6%")
             return asyncio.run(_tts(text, voice or VOICES["male"], rate, mp3))
         except Exception as e:
             if attempt == 3:
@@ -1154,7 +1180,7 @@ def render_motion(work, kind, words, duration, clips, title, sections, host=None
     """Animated style (Remotion): presenter character, kinetic captions, headline/fact cards.
     Assets are served from the work folder."""
     fmt = FORMATS[kind]
-    fps, total = 30, duration + 0.8
+    fps, total = 30, duration + (0.1 if kind == "short" else 0.8)
     media = clips  # photos and real video clips, in script order
     scenes = []
     if media:
@@ -1743,6 +1769,10 @@ def update_stats(full=True):
                 "views": st["viewCount"], "likes": st["likeCount"], "comments": st["commentCount"], "updated_at": now})
     log(f"stats updated for {len(ids)} videos")
     save_channel_stats()  # 1 quota unit: keeps the app's subscriber/view tiles fresh every 10 minutes
+    try:
+        double_down()
+    except Exception as e:
+        log(f"double-down skipped: {str(e)[:160]}")
     if not full:  # quick refresh (publish checks): view counts + channel totals, feeds the views-per-hour learning
         try:
             update_goals()  # database only, no quota
@@ -1817,6 +1847,76 @@ def factory_busy(token, repo):
     return False
 
 
+FOLLOWUPS_PER_WINNER, FOLLOWUPS_PER_DAY, FOLLOWUP_GAP_H = 2, 3, 6
+
+
+def double_down():
+    """Breakout rule: a Short that clearly outperforms the channel (3x the median views/hour, 300+ views) gets up to
+    2 follow-up Shorts on the same story from new angles, at least 6 h apart - the Shorts feed already showed the
+    audience wants this topic. Queued as run requests (started when no factory run is busy)."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    state = get_setting("followups", {}) or {}
+    today = str(now.date())
+    made_today = state.get("count", 0) if state.get("date") == today else 0
+    done = state.get("done", {})  # youtube_id -> [iso times of queued follow-ups]
+    if made_today >= FOLLOWUPS_PER_DAY:
+        return
+    queued = []
+    for lang in LANGS:
+        base = [r["vph"] for r in scored_videos(lang, days=14) if r["kind"] == "short"]
+        if len(base) < 5:
+            continue
+        median = sorted(base)[len(base) // 2]
+        for r in scored_videos(lang, days=2, min_hours=1):
+            if r["kind"] != "short" or r["views"] < 300 or r["vph"] < max(30, 3 * median):
+                continue
+            vid = r.get("youtube_id")
+            times = done.get(vid, [])
+            if not vid or len(times) >= FOLLOWUPS_PER_WINNER or (
+                    times and now - datetime.datetime.fromisoformat(times[-1]) < datetime.timedelta(hours=FOLLOWUP_GAP_H)):
+                continue
+            sb_rest("POST", "run_requests", json={"lang": lang, "long": 0, "shorts": 1, "followup": vid})
+            done[vid] = times + [now.isoformat()]
+            made_today += 1
+            queued.append(f"{lang} {r['title'][:50]} ({r['vph']:.0f}/h vs median {median:.1f})")
+            if made_today >= FOLLOWUPS_PER_DAY:
+                break
+        if made_today >= FOLLOWUPS_PER_DAY:
+            break
+    if queued:
+        keep = dict(list(done.items())[-200:])
+        sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates",
+                json={"key": "followups", "value": {"date": today, "count": made_today, "done": keep}})
+        log("double-down: follow-up Shorts queued for " + "; ".join(queued))
+
+
+def plan_followup(vid):
+    """Planner for a follow-up Short: same story as a breakout Short, a NEW angle, labelled as part 2."""
+    def planner(trends, niche, used):
+        rows = sb_rest("GET", f"insights?select=title,topic,lang&youtube_id=eq.{vid}")
+        if not rows:
+            log(f"follow-up: {vid} not found")
+            return []
+        orig = rows[0]
+        ctx = story_context(orig["topic"])
+        if not ctx:
+            log(f"follow-up: no fresh sources for '{orig['topic']}'")
+            return []
+        kw = keyword_research(orig["topic"])
+        pick = {"topic": orig["topic"], "angle": (
+            f"FOLLOW-UP (part 2) to our Short '{orig['title']}', which viewers loved. Use a NEW angle and different "
+            "facts (what happens next, reactions, what it means for you); do not repeat the first Short. Mention "
+            "naturally that this is part 2.")}
+        variant = pick_short_variant(0)
+        fmt_names = [f for f in SHORT_FORMATS if f != "hot_take"]
+        meta = fact_check(write_short(pick, ctx, kw, variant, random.choice(fmt_names)), ctx, "short")
+        meta.update({"variant": variant, "followup_of": vid, "sources": sorted({c["source"] for c in ctx if c["source"]})[:8],
+                     "search_suggestions": kw})
+        log(f"follow-up: part 2 of '{orig['title']}'")
+        return [("short", meta)]
+    return planner
+
+
 def process_requests():
     """'Run now' taps in the app become factory runs. Runs inside GitHub Actions with its own short-lived token;
     capped so the daily YouTube upload limit (about 6) is never exceeded."""
@@ -1843,7 +1943,9 @@ def process_requests():
             r = requests.post(f"https://api.github.com/repos/{repo}/actions/workflows/factory.yml/dispatches",
                               headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
                               json={"ref": "main", "inputs": {"lang": req["lang"], "long": str(req["long"]),
-                                                              "shorts": str(req["shorts"])}}, timeout=30)
+                                                              "shorts": str(req["shorts"]),
+                                                              **({"followup": req["followup"]} if req.get("followup") else {})}},
+                              timeout=30)
             status = "started" if r.status_code == 204 else f"failed: GitHub {r.status_code}"
             if r.status_code == 204:
                 uploads += want
@@ -1997,7 +2099,7 @@ def views_per_hour(r):
 
 def scored_videos(lang=None, days=30, min_hours=6):
     """Recent videos (online >= min_hours) ranked by views per hour, with % watched when known."""
-    q = (f"insights?select=kind,lang,title,variant,views,likes,avg_view_pct,created_at&created_at=gte.{days_ago(days)}"
+    q = (f"insights?select=youtube_id,kind,lang,title,variant,views,likes,avg_view_pct,created_at&created_at=gte.{days_ago(days)}"
          f"&created_at=lt.{(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=min_hours)).strftime('%Y-%m-%dT%H:%M:%SZ')}")
     if lang:
         q += f"&lang=eq.{lang}"
@@ -2138,7 +2240,7 @@ def slugify(s):
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:40] or "video"
 
 
-UPLOAD_CAP = 5  # per Google project per rolling day (10,000 quota units / 1,600 per upload, minus room for extras)
+UPLOAD_CAP = 12  # per Google project per rolling day; an upload costs ~100 quota units since Dec 2025 (was 1,600)
 
 
 def uploads_24h(lang):
@@ -2174,7 +2276,7 @@ Return JSON only: {{"breaking": false}} or
     log(f"breaking: '{pick['topic']}' ({len(ctx)} sources)")
     kw = keyword_research(pick.get("search_query") or pick["topic"])
     meta = fact_check(write_short({**pick, "angle": pick.get("angle", "") + ". This is BREAKING news from the last few "
-                                   "hours: open with what just happened."}, ctx, kw, "quick"), ctx, "short")
+                                   "hours: open with what just happened."}, ctx, kw, "fast", "hot_take"), ctx, "short")
     meta.update({"variant": "breaking", "sources": sorted({c["source"] for c in ctx if c["source"]})[:8],
                  "search_suggestions": kw})
     return [("short", meta)]
@@ -2252,7 +2354,7 @@ def run_videos(args, planner, note):
                 log(f"[{kind}] uploaded https://youtu.be/{vid} ({privacy}{', held by fact-check' if meta.get('hold') else ''})")
                 # YouTube rejects comments on private videos; publish_pending() posts it once public.
                 comment = meta.get("pinned_comment")
-                if comment and meta.get("related_url"):
+                if comment and meta.get("related_url") and kind == "long":
                     comment += f"\n\n{L()['text']['full_story']} {meta['related_url']}"
                 after_upload(vid, thumb, comment if privacy == "public" else None)
                 if kind == "long" and privacy == "public":
@@ -2289,6 +2391,7 @@ def main():
     ap.add_argument("--process-requests", action="store_true", help="start runs requested from the app")
     ap.add_argument("--weekly", action="store_true", help="make the long video the weekly Top 10 (default: Sundays)")
     ap.add_argument("--breaking", action="store_true", help="check for big breaking news; make a Short if found")
+    ap.add_argument("--followup", help="make a part-2 Short for this breakout Short (YouTube id)")
     ap.add_argument("--project", type=int, choices=(1, 2), default=1, help="with --auth: which Google Cloud project to log in")
     args = ap.parse_args()
     load_env()
@@ -2327,6 +2430,13 @@ def main():
     args.shorts = 1 if args.shorts is None else args.shorts
     if get_setting("paused", False) is True:
         log("PAUSED from the app (Controls > Pause automation): no new videos this run")
+        return
+    if args.followup:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{6,20}", args.followup):
+            raise SystemExit("bad --followup id")
+        failures = run_videos(args, plan_followup(args.followup), "follow-up Short")
+        if failures:
+            raise SystemExit(f"{failures} video(s) failed")
         return
     goal = get_setting("goal_status", {}) or {}
     if os.environ.get("CLOCK_SLOT") and goal.get("mode") == "watch" and (args.long, args.shorts) == (0, 1):

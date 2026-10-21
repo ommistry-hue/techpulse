@@ -36,7 +36,8 @@ const useTalk = (src) => {
 const Scene = ({ src, dur, index, L, video = false }) => {
   const frame = useCurrentFrame();
   const T = 12;
-  const style = video ? index % 2 : index % 4, trans = index % 3;  // real clips: full-frame zoom/pan only
+  // real clips: full-frame zoom/pan only; Shorts: mostly full-frame, floating cards ~1 in 4 scenes
+  const style = video ? index % 2 : L ? index % 4 : [0, 1, 0, 1, 2, 0, 1, 3][index % 8], trans = index % 3;
   const p = interpolate(frame, [0, dur + T], [0, 1], clamp);
   const enter = interpolate(frame, [0, T], [0, 1], { ...clamp, easing: Easing.out(Easing.cubic) });
   const exit = interpolate(frame, [dur, dur + T], [1, 0], clamp);
@@ -45,7 +46,7 @@ const Scene = ({ src, dur, index, L, video = false }) => {
     if (trans === 0) tx = (1 - enter) * 100;          // whip slide
     if (trans === 1) { sc = 1 + (1 - enter) * 0.25; flash = (1 - enter) * 0.7; } // punch-in flash
   }
-  const opacity = (index === 0 || trans === 2 ? enter : 1) * exit;
+  const opacity = (index > 0 && trans === 2 ? enter : 1) * exit;
   const img = (extra) => video
     ? <OffthreadVideo src={staticFile(src)} muted style={{ position: "absolute", inset: 0, width: "100%", height: "100%", ...extra, objectFit: "cover" }} />
     : <Img src={staticFile(src)} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", ...extra }} />;
@@ -55,9 +56,9 @@ const Scene = ({ src, dur, index, L, video = false }) => {
   );
   let content;
   if (style === 0) {
-    content = img({ objectFit: L ? "cover" : "contain", transform: `scale(${1.04 + p * 0.16})` });
+    content = img({ objectFit: "cover", transform: `scale(${1.04 + p * 0.16})` });
   } else if (style === 1) {
-    content = img({ objectFit: L ? "cover" : "contain", transform: `scale(1.18) translateX(${(p - 0.5) * (L ? -90 : -60)}px)` });
+    content = img({ objectFit: "cover", transform: `scale(1.18) translateX(${(p - 0.5) * (L ? -90 : -60)}px)` });
   } else if (style === 2) {
     const ry = interpolate(p, [0, 1], [14, -6]);
     content = (
@@ -183,7 +184,7 @@ const HookTitle = ({ title, L, duo }) => {
   return (
     <AbsoluteFill style={{ justifyContent: L ? "center" : "flex-start", alignItems: "center", opacity: out,
       paddingTop: L ? 0 : 300, paddingRight: L && !duo ? 420 : 0 }}>
-      <div style={{ transform: `scale(${0.5 + inn * 0.5}) rotate(${-2 + shake * 0.2}deg)`, background: "rgba(7,13,26,.92)",
+      <div style={{ transform: `scale(${L ? 0.5 + inn * 0.5 : 0.92 + inn * 0.08}) rotate(${-2 + shake * 0.2}deg)`, background: "rgba(7,13,26,.92)",
         borderRadius: 18, border: `5px solid ${CYAN}`, padding: L ? "22px 44px" : "26px 36px", maxWidth: L ? 1250 : 960,
         boxShadow: `0 0 50px ${CYAN}88, 0 25px 70px rgba(0,0,0,.6)` }}>
         <div style={{ fontFamily: FONT, color: WHITE, fontSize: L ? 92 : 104, lineHeight: 1.02, textAlign: "center",
@@ -390,7 +391,7 @@ export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mo
   const L = kind === "long";
   const t = frame / fps;
   const talk = useTalk(audio ? staticFile(audio) : null);
-  const ctaStart = Math.max(0, durationInFrames - fps * (L ? 8 : 4));
+  const ctaStart = L ? Math.max(0, durationInFrames - fps * 8) : durationInFrames;  // Shorts loop: no end sequence
   const spans = useMemo(() => speechSpans(words), [words]);
   const events = useMemo(() => [...sections.map(s => s.start), ...facts.map(f => f.t)], [sections, facts]);
   const gestures = useMemo(() => buildGestures(fps, durationInFrames, events, ctaStart), [fps, durationInFrames, events, ctaStart]);
@@ -406,7 +407,7 @@ export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mo
     return <Presenter character={who} frame={frame} mouth={active ? mouthAt(mouth, t, talk) : "X"}
       pose={active ? g.type : "idle"} prevPose={active ? prev.type : "idle"} blend={active ? blend : 1}
       talk={active ? talk : 0} brow={active ? brow : 0}
-      look={active && g.type !== "point" ? 0 : -1} size={L ? (duo ? 480 : 560) : 640} />;  // -1 = toward the other host / the cards
+      look={active && g.type !== "point" ? 0 : -1} size={L ? (duo ? 480 : 560) : 520} />;  // -1 = toward the other host / the cards
   };
 
   return (
@@ -448,12 +449,13 @@ export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mo
         <div style={{ position: "absolute", left: 30, bottom: -50, transform: "scaleX(-1)" }}>{host("nova")}</div>
         <div style={{ position: "absolute", right: 30, bottom: -50 }}>{host("max")}</div>
       </> : (
-        <div style={{ position: "absolute", right: L ? 40 : 80, bottom: L ? -70 : -40 }}>{host(character)}</div>
+        // Shorts: bottom-left, clear of YouTube's like/comment buttons on the right
+        <div style={{ position: "absolute", ...(L ? { right: 40, bottom: -70 } : { left: 10, bottom: -40 }) }}>{host(character)}</div>
       )}
 
       <Sequence durationInFrames={fps * 4} layout="none"><HookTitle title={title} L={L} duo={duo} /></Sequence>
-      {frame >= fps * 3.4 && <Captions words={words} L={L} duo={duo} />}
-      <Sequence from={ctaStart} layout="none"><EndCTA L={L} ui={ui} /></Sequence>
+      {(!L || frame >= fps * 3.4) && <Captions words={words} L={L} duo={duo} />}
+      {L && <Sequence from={ctaStart} layout="none"><EndCTA L={L} ui={ui} /></Sequence>}
       {L && durationInFrames > fps * 60 && (
         <Sequence from={Math.round(durationInFrames * 0.4)} durationInFrames={Math.round(fps * 3.8)} layout="none">
           <SubscribePill ui={ui} />
@@ -461,21 +463,20 @@ export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mo
         </Sequence>
       )}
 
-      <div style={{ position: "absolute", left: 0, right: 0, [L ? "bottom" : "top"]: 0, height: L ? 10 : 14,
-        background: "rgba(255,255,255,.15)" }}>
+      {L && <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 10, background: "rgba(255,255,255,.15)" }}>
         <div style={{ width: `${(frame / durationInFrames) * 100}%`, height: "100%", background: NEON }} />
-      </div>
+      </div>}
       {audio && <Audio src={staticFile(audio)} />}
       {music && <Audio src={staticFile(music)} loop volume={(f) => {
         const t = f / fps, under = L ? 0.055 : 0.075, open = L ? 0.16 : 0.2;
         let v = under + (open - under) * (1 - speakingAmount(spans, t));
         if (f >= ctaStart) v = interpolate(f, [ctaStart, ctaStart + fps], [v, open * 1.15], clamp);  // swell under the end sequence
         const fadeIn = interpolate(f, [0, fps * 0.4], [0.4, 1], clamp);
-        const fadeOut = interpolate(f, [durationInFrames - fps * 1.5, durationInFrames], [1, 0], clamp);
+        const fadeOut = L ? interpolate(f, [durationInFrames - fps * 1.5, durationInFrames], [1, 0], clamp) : 1;
         return v * fadeIn * fadeOut;
       }} />}
       <Audio src={staticFile("hit.wav")} volume={0.45} />
-      {["pop.wav", "pop.wav", "pop.wav", "ding.wav"].map((s, i) => (
+      {L && ["pop.wav", "pop.wav", "pop.wav", "ding.wav"].map((s, i) => (
         <Sequence key={`c${i}`} from={ctaStart + Math.round(i * CTA_STEP * fps)} durationInFrames={Math.round(fps * 1.2)} layout="none">
           <Audio src={staticFile(s)} volume={s === "ding.wav" ? 0.4 : 0.32} />
         </Sequence>

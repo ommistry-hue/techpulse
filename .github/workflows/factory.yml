@@ -28,6 +28,9 @@ on:
       slot:
         description: "Set by the Clock (names the run so a slot never runs twice)"
         default: ""
+      followup:
+        description: "Set automatically: YouTube id of a breakout Short to make a part 2 for"
+        default: ""
 
 concurrency:
   group: factory
@@ -110,16 +113,18 @@ jobs:
         id: plan
         env:
           IN_MODE: ${{ inputs.mode }}
+          IN_FOLLOWUP: ${{ inputs.followup }}
           IN_LANG: ${{ inputs.lang }}
           IN_LONG: ${{ inputs.long }}
           IN_SHORTS: ${{ inputs.shorts }}
           IN_UPLOAD: ${{ inputs.upload }}
         run: |
           if [ "$IN_MODE" = "breaking" ]; then echo "args=--breaking" >> "$GITHUB_OUTPUT"; exit 0; fi
+          FU=""; if [ -n "$IN_FOLLOWUP" ]; then [[ "$IN_FOLLOWUP" =~ ^[A-Za-z0-9_-]{6,20}$ ]] || { echo "bad followup"; exit 1; }; FU="--followup $IN_FOLLOWUP"; fi
           G="${IN_LANG:-en}"; L="${IN_LONG:-1}"; S="${IN_SHORTS:-1}"
           [[ "$G" =~ ^(en|hi)$ && "$L" =~ ^[01]$ && "$S" =~ ^[0-4]$ ]] || { echo "bad input"; exit 1; }
           EXTRA=""; [ "${IN_UPLOAD:-yes}" = "no" ] && EXTRA="--no-upload"
-          echo "args=--lang $G --long $L --shorts $S $EXTRA" >> "$GITHUB_OUTPUT"
+          echo "args=--lang $G --long $L --shorts $S $EXTRA $FU" >> "$GITHUB_OUTPUT"
       - name: Make and upload
         env:
           CLOCK_SLOT: ${{ inputs.slot }}  # set for scheduled slots (goal strategy may turn a Short slot into a long video)
