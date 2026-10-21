@@ -23,7 +23,7 @@ on:
         description: "Upload to YouTube (no = test render only, saves the daily upload limit)"
         default: "yes"
       mode:
-        description: "normal or breaking (breaking-news check)"
+        description: "normal, breaking (breaking-news check) or viral (one viral-format Short)"
         default: "normal"
       slot:
         description: "Set by the Clock (names the run so a slot never runs twice)"
@@ -120,6 +120,11 @@ jobs:
           IN_UPLOAD: ${{ inputs.upload }}
         run: |
           if [ "$IN_MODE" = "breaking" ]; then echo "args=--breaking" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$IN_MODE" = "viral" ]; then
+            [[ "${IN_LANG:-en}" =~ ^(en|hi)$ ]] || { echo "bad lang"; exit 1; }
+            EXTRA=""; [ "${IN_UPLOAD:-yes}" = "no" ] && EXTRA="--no-upload"
+            echo "args=--lang ${IN_LANG:-en} --viral $EXTRA" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           FU=""; if [ -n "$IN_FOLLOWUP" ]; then [[ "$IN_FOLLOWUP" =~ ^[A-Za-z0-9_-]{6,20}$ ]] || { echo "bad followup"; exit 1; }; FU="--followup $IN_FOLLOWUP"; fi
           G="${IN_LANG:-en}"; L="${IN_LONG:-1}"; S="${IN_SHORTS:-1}"
           [[ "$G" =~ ^(en|hi)$ && "$L" =~ ^[01]$ && "$S" =~ ^[0-4]$ ]] || { echo "bad input"; exit 1; }

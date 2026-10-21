@@ -161,3 +161,9 @@ update public.insights set health_at = updated_at where health is not null and h
 -- Automatic part-2 Shorts for breakout Shorts (set only by the automation)
 alter table public.run_requests add column if not exists followup text;
 insert into public.settings (key, value) values ('followups', '{}') on conflict (key) do nothing;
+
+-- Short format (hot_take, versus_test, budget_list...) for learning which formats win
+alter table public.insights add column if not exists format text;
+
+-- Part-2 Shorts point at the breakout Short they follow (no part 2 of a part 2)
+alter table public.insights add column if not exists followup_of text;

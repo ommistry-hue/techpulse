@@ -534,12 +534,45 @@ SHORT_FORMATS = {
     "myth_fact": "Start with what most people think, then the sourced fact that flips it.",
     "number_shock": "Open on the single most shocking sourced number or price, then explain why it matters to you.",
     "what_it_means": "Explain in plain words what this changes for the viewer's phone, money, job or daily life.",
+    # Viral-format track (formats that took new tech channels to millions of Shorts views in 2026)
+    "versus_test": "A face-off between two phones/gadgets/AI tools on ONE thing people care about (speed, battery, "
+                   "camera, price, durability) using only sourced specs; fast back-and-forth, a clear winner named in "
+                   "the line before the loop. Put the comparison on screen as a versus card.",
+    "top3_unique": "Top 3 most unique or unbelievable gadgets / tech from the sources, counted 3-2-1, one punchy line "
+                   "each, the wildest one last.",
+    "budget_list": "Best phones or gadgets under one price (for example under Rs 15,000 or Rs 20,000) from the source "
+                   "articles: 3 picks, one sourced reason each, then a verdict.",
+    "hidden_trick": "One hidden setting or trick the viewer can try right now on their phone, app or AI tool, in 2-3 "
+                    "short steps - only a trick the sources describe.",
+    "what_if": "A curious 'what happens if...' question about real tech from the sources, answered with sourced "
+               "facts, ending on a twist.",
+    "money_risk": "Why this matters for the viewer's job or money (India for Hindi, US for English): the money or risk "
+                  "angle, strictly factual, no fear beyond what the sources say.",
 }
+VIRAL_FORMATS = {"en": ["versus_test", "top3_unique", "what_if", "hidden_trick"],
+                 "hi": ["versus_test", "budget_list", "hidden_trick", "top3_unique", "money_risk"]}
+FAST_FORMATS = {"versus_test", "hidden_trick"}  # 16-22 s; the rest 25-30 s
+
+
+NEWS_FORMATS = ["hot_take", "versus", "three_things", "myth_fact", "number_shock", "what_it_means"]
+
+
+def shorts_made_today(formats):
+    """How many Shorts in this language with one of these formats were made today (drives format rotation)."""
+    if not sb_on():
+        return 0
+    try:
+        rows = sb_rest("GET", f"insights?select=format&kind=eq.short&lang=eq.{LANG}&created_at=gte."
+                              f"{datetime.datetime.now(datetime.timezone.utc):%Y-%m-%d}T00:00:00Z")
+        return sum(1 for r in rows if r.get("format") in formats)
+    except Exception:
+        return 0
 
 
 def pick_short_format(i):
-    names = list(SHORT_FORMATS)
-    return names[(datetime.date.today().toordinal() * 3 + i + (2 if LANG == "hi" else 0)) % len(names)]
+    """Each news Short of the day gets the next format, so no two in a row look the same."""
+    names = NEWS_FORMATS
+    return names[(datetime.date.today().toordinal() * 2 + shorts_made_today(names) + i) % len(names)]
 
 
 def pick_short_variant(i):
@@ -560,8 +593,10 @@ def pick_short_variant(i):
     return list(SHORT_VARIANTS)[(datetime.date.today().toordinal() + i) % len(SHORT_VARIANTS)]
 
 
-def write_short(pick, ctx, kw, variant="core", fmt_name=None):
+def write_short(pick, ctx, kw, variant="core", fmt_name=None, _retry=True):
     lo, hi, secs = SHORT_VARIANTS[variant]
+    if LANG == "hi":  # Hindi words are longer when spoken: same seconds need ~25% fewer words
+        lo, hi = round(lo * 0.75), round(hi * 0.75)
     fmt_name = fmt_name or random.choice(list(SHORT_FORMATS))
     meta = llm_json(f"""Write a YouTube Short script ({lo}-{hi} words, {secs}) for {CHANNEL()}, a tech & AI news channel.
 STORY: {pick['topic']} - angle: {pick.get('angle', '')}
@@ -601,11 +636,49 @@ Return JSON only:
  "card": null,
  "script": "...",
  "keywords": ["6 image search terms"]}}""", required=("topic", "title", "script", "keywords"))
+    meta["script"] = clean_script(meta["script"]).get("script") or ""
+    if not meta["script"]:
+        raise ValueError("script came back malformed")
+    if LANG == "hi" and devanagari_share(meta["script"]) < 0.4 and _retry:
+        log("[short] Hindi script came back in Latin letters, rewriting")  # the Hindi voice needs Devanagari
+        return write_short(pick, ctx, kw, variant, fmt_name, _retry=False)
     if len(meta["script"].split()) < lo * 0.75:  # only when clearly too short: padding hurts Shorts
         log(f"[short] '{meta['topic']}' too short, expanding")
         meta["script"] = expand(meta["script"], lo, hi)
     meta["format"] = fmt_name
     return meta
+
+
+def clean_script(value):
+    """Models sometimes return the script as a JSON string ('{"script": "...", "facts": [...]}'). Unwrap it so the
+    voice never reads code aloud."""
+    out, text = {}, value if isinstance(value, str) else ""
+    for _ in range(2):
+        t = text.strip().strip("`").strip()
+        if not t.startswith("{"):
+            break
+        try:
+            data = parse_json(t)
+        except ValueError:
+            return {}  # half-JSON: unusable
+        out.update({k: data[k] for k in ("facts", "card") if k in data})
+        text = data.get("script", "") if isinstance(data.get("script"), str) else ""
+    if "{" in text or '"script"' in text:
+        return {}
+    out["script"] = text.strip()
+    return out
+
+
+def devanagari_share(s):
+    """Share of letters that are Devanagari (Hinglish scripts keep English product names, so ~0.5-0.9 is normal)."""
+    letters = [ch for ch in s if ch.isalpha()]
+    return sum("\u0900" <= ch <= "\u097f" for ch in letters) / max(1, len(letters))
+
+
+def same_writing(before, after):
+    """Hindi stays Hindi: a rewrite must not switch Devanagari to Latin letters (the Hindi voice can't read that)."""
+    dev = lambda s: sum("ऀ" <= ch <= "ॿ" for ch in s) / max(1, len(s))
+    return dev(after) >= dev(before) * 0.6
 
 
 def fact_check(meta, ctx, kind):
@@ -646,9 +719,14 @@ Return JSON only: {{"verdict": "...", "safe": true, "safety_reason": "", "issues
             meta["sections"] = res["sections"]
             finalize_sections(meta)
         elif kind == "short" and res.get("script"):
-            meta["script"] = res["script"]
-            meta["facts"] = res.get("facts", meta.get("facts", []))
-            meta["card"] = res.get("card")
+            fixed = clean_script(res["script"])
+            if fixed.get("script") and same_writing(meta["script"], fixed["script"]):
+                meta["script"] = fixed["script"]
+                meta["facts"] = fixed.get("facts") or res.get("facts", meta.get("facts", []))
+                meta["card"] = fixed.get("card", res.get("card"))
+            else:  # the rewrite came back malformed or in another script: keep the original, hold it for review
+                log(f"[{kind}] fact-check rewrite rejected (malformed or wrong script)")
+                v = "fail"
         if res.get("title"):
             meta["title"] = res["title"]
     meta["fact_check"] = {"verdict": v, "issues": res.get("issues", [])[:8]}
@@ -744,7 +822,8 @@ def tts(text, mp3, kind, voice=None):
     for attempt in range(4):
         try:
             # English a little brisk for energy; Hindi at natural pace so it stays easy to follow.
-            rate = os.environ.get("TTS_RATE") or ("+0%" if LANG == "hi" else "+12%" if kind == "short" else "+6%")
+            rate = os.environ.get("TTS_RATE") or (("+8%" if LANG == "hi" else "+12%") if kind == "short"
+                                                  else ("+0%" if LANG == "hi" else "+6%"))
             return asyncio.run(_tts(text, voice or VOICES["male"], rate, mp3))
         except Exception as e:
             if attempt == 3:
@@ -1175,8 +1254,121 @@ def make_plain_thumbnail(work, text, at, image=None):
     return work / "thumb.jpg"
 
 
+VS_GENERIC = {"old", "new", "before", "after", "now", "then", "this", "that", "today", "last year", "next year"}
+VS_WIN = re.compile(r"^(wins?|winner|winning|won|beats?|beat|crushes|takes|clear|better|faster|stronger|longer|cheaper|"
+                    r"जीत\w*|विजेता|बेहतर|आगे)$", re.I)
+
+
+def _norm_word(w):
+    return re.sub(r"[^\w#]", "", w.lower())
+
+
+def versus_props(meta, work, fmt, words):
+    """versus_test Shorts: one photo per side of the versus card + who wins (None if the script is unclear).
+    Returns (props or None, credits)."""
+    c = meta.get("card")
+    if meta.get("format") != "versus_test" or not isinstance(c, dict) or c.get("type") != "versus":
+        return None, []
+    sides, credits = {}, []
+    for side in ("left", "right"):
+        name = str(c.get(side) or "").strip()
+        head = re.split(r"\s*[:=(|]\s*", name)[0].strip()
+        query = head if len(re.findall(r"[^\W\d_]", head)) >= 3 else re.sub(r"\d[\d.,]*\s*[a-zA-Z%]{0,4}", "", name).strip(" :-")
+        if not query or query.lower() in VS_GENERIC:
+            return None, []
+        src, credit, video = None, None, False
+        try:
+            imgs = sorted(wikimedia_search(query), key=lambda i: i["score"], reverse=True)
+            for v in imgs[:3]:
+                ext = Path(urlparse(v["image"]).path).suffix.lower()
+                path = work / f"vs_{side}{ext if ext in ('.jpg', '.jpeg', '.png', '.webp') else '.jpg'}"
+                try:
+                    r = requests.get(v["image"], timeout=60, headers=WIKI_UA)
+                    r.raise_for_status()
+                    path.write_bytes(r.content)
+                    src, credit, video = path.name, v.get("credit"), False
+                    break
+                except requests.RequestException:
+                    continue
+            if not src:  # any other source (stock video/photo) for that name
+                (work / f"vs_{side}").mkdir(exist_ok=True)
+                got = fetch_clips([query], work / f"vs_{side}", fmt, 1)
+                if got:
+                    src, credit, video = f"vs_{side}/{got[0]['path'].name}", got[0]["credit"], not got[0]["is_image"]
+        except Exception as e:
+            log(f"  versus image for '{query}' failed: {str(e)[:100]}")
+        if not src:
+            return None, []
+        if credit:
+            credits.append(credit)
+        sides[side] = {"name": name, "src": src, "video": video, "query": query}
+    # Which words name each side (only the ones the other side does not share, e.g. "s26" vs "iphone")
+    toks = {s: {w for w in re.findall(r"\w+", sides[s]["query"].lower()) if len(w) >= 2} for s in sides}
+    own = {"left": toks["left"] - toks["right"], "right": toks["right"] - toks["left"]}
+    ws = [(a, _norm_word(w)) for a, _, w in words]
+    for s in sides:
+        sides[s]["hits"] = [round(a, 2) for a, w in ws if w in own[s]]
+        del sides[s]["query"]
+    winner, win_at = None, None
+    last = ws[-1][0] if ws else 0
+    for i in range(len(ws) - 1, -1, -1):  # the winner line is near the end, just before the loop line
+        a, w = ws[i]
+        if a < last * 0.5:
+            break
+        if not VS_WIN.match(w):
+            continue
+        before = [s for j in range(max(0, i - 6), i) for s in own if ws[j][1] in own[s]]
+        after = [s for j in range(i + 1, min(len(ws), i + 7)) for s in own if ws[j][1] in own[s]]
+        near = set(before + after)
+        if len(near) == 1:
+            winner = near.pop()
+        elif near and w.startswith("winner") and after:
+            winner = after[0]
+        elif near and before:
+            winner = before[-1]
+        if winner:
+            named = [j for j in range(max(0, i - 6), i) if ws[j][1] in own[winner]]
+            win_at = round(ws[named[-1] if named else i][0], 2)  # "Galaxy wins": light up as the name is said
+            break
+    return {"left": sides["left"], "right": sides["right"], "label": c.get("label") or "",
+            "winner": winner, "winAt": win_at}, credits
+
+
+COUNT_WORDS = {3: {"3", "#3", "three", "third", "तीन", "तीसरा", "तीसरे", "तीसरी", "३"},
+               2: {"2", "#2", "two", "second", "दो", "दूसरा", "दूसरे", "दूसरी", "२"},
+               1: {"1", "#1", "one", "first", "एक", "पहला", "पहले", "पहली", "१"}}
+
+
+def countdown_times(meta, words, duration):
+    """top3_unique Shorts: when the #3, #2, #1 badges pop in (spoken markers, else 3 equal parts after the hook)."""
+    if meta.get("format") != "top3_unique":
+        return []
+    ws = [(a, _norm_word(w)) for a, _, w in words]
+    for strict in (True, False):  # strict = "number 3" / "#3" / a digit; loose = also the word "three"/"तीन"
+        out, start = [], 0
+        for n in (3, 2, 1):
+            for i in range(start, len(ws)):
+                a, w = ws[i]
+                prev = ws[i - 1][1] if i else ""
+                hit = (w in COUNT_WORDS[n] and (w[0].isdigit() or w.startswith("#") or prev in ("number", "नंबर", "no"))
+                       if strict else w in COUNT_WORDS[n])
+                if hit and a >= 1.0 and prev not in ("top", "टॉप") and (not out or a - out[-1]["t"] >= 2.0):
+                    t = ws[i - 1][0] if prev in ("number", "नंबर", "no") else a
+                    out.append({"n": n, "t": round(t, 2)})
+                    start = i + 1
+                    break
+            else:
+                break
+        if len(out) == 3:
+            return out
+    hook = next((a for a, _ in ws if a >= 2.5), 2.5)
+    hook = min(hook, duration * 0.25)
+    step = (duration * 0.95 - hook) / 3
+    return [{"n": n, "t": round(hook + k * step, 2)} for k, n in enumerate((3, 2, 1))]
+
+
 def render_motion(work, kind, words, duration, clips, title, sections, host=None, mouth=(), facts=(), turns=(),
-                  cards=()):
+                  cards=(), versus=None, countdown=()):
     """Animated style (Remotion): presenter character, kinetic captions, headline/fact cards.
     Assets are served from the work folder."""
     fmt = FORMATS[kind]
@@ -1208,7 +1400,7 @@ def render_motion(work, kind, words, duration, clips, title, sections, host=None
              "sections": [{"start": round(t, 2), "heading": h} for t, h in sections], "title": title,
              "channel": os.environ.get("CHANNEL_NAME", "TechPulse").upper(),
              "character": (host or {}).get("character", "max"), "mouth": list(mouth), "ui": L()["ui"], "lang": LANG,
-             "music": music, "turns": list(turns), "cards": list(cards),
+             "music": music, "turns": list(turns), "cards": list(cards), "versus": versus, "countdown": list(countdown),
              "facts": [{"t": round(t, 2), "text": x} for t, x in facts]}
     (work / "props.json").write_text(json.dumps(props, ensure_ascii=False), encoding="utf-8")
     npx = shutil.which("npx") or "npx"
@@ -1254,9 +1446,12 @@ def make_video(work, kind, meta, host=None):
             mouth = lipsync(work, meta["script"])
             log(f"[{kind}] lip sync: {len(mouth)} mouth shapes")
             title = meta.get("hook_text") or meta["title"]
+            versus, vs_credits = versus_props(meta, work, fmt, words) if kind == "short" else (None, [])
+            credits += vs_credits
+            countdown = countdown_times(meta, words, duration) if kind == "short" else []
             video = render_motion(work, kind, words, duration, clips, title, section_list, host, mouth,
                                   fact_times(meta, kind, words, duration, section_list), turns,
-                                  card_times(meta, kind, duration, section_list))
+                                  card_times(meta, kind, duration, section_list), versus, countdown)
         except Exception as e:  # never lose a day's video: fall back to the classic slideshow
             log(f"[{kind}] animated render failed ({str(e)[:150]}), using classic style")
     if video is None:
@@ -1701,7 +1896,8 @@ def record(work, kind, meta, desc, duration, vid, thumb):
                  "hold": bool(meta.get("hold"))}})
     if vid:
         sb_rest("POST", "insights", prefer="return=representation,resolution=merge-duplicates", json={"youtube_id": vid, "lang": LANG, "kind": kind, "topic": meta["topic"], "title": meta["title"],
-                      "variant": meta.get("variant") or ("weekly" if meta.get("weekly") else None)})
+                      "variant": meta.get("variant") or ("weekly" if meta.get("weekly") else None),
+                      "format": meta.get("format"), "followup_of": meta.get("followup_of")})
     try:  # app preview files are a convenience: a failure here must not lose the record above
         paths = {"preview_path": sb_upload(make_preview(work, kind), f"{prefix}/preview.mp4", "video/mp4")}
         if thumb:
@@ -1847,7 +2043,7 @@ def factory_busy(token, repo):
     return False
 
 
-FOLLOWUPS_PER_WINNER, FOLLOWUPS_PER_DAY, FOLLOWUP_GAP_H = 2, 3, 6
+FOLLOWUPS_PER_WINNER, FOLLOWUPS_PER_DAY, FOLLOWUP_GAP_H = 2, 5, 6
 
 
 def double_down():
@@ -1868,51 +2064,103 @@ def double_down():
             continue
         median = sorted(base)[len(base) // 2]
         for r in scored_videos(lang, days=2, min_hours=1):
-            if r["kind"] != "short" or r["views"] < 300 or r["vph"] < max(30, 3 * median):
+            if (r["kind"] != "short" or r["views"] < 300 or r["vph"] < max(30, 3 * median)
+                    or r.get("followup_of")):  # a part 2 never gets its own part 2 (no chains of near-duplicates)
                 continue
             vid = r.get("youtube_id")
             times = done.get(vid, [])
             if not vid or len(times) >= FOLLOWUPS_PER_WINNER or (
                     times and now - datetime.datetime.fromisoformat(times[-1]) < datetime.timedelta(hours=FOLLOWUP_GAP_H)):
                 continue
-            sb_rest("POST", "run_requests", json={"lang": lang, "long": 0, "shorts": 1, "followup": vid})
+            if sb_rest("GET", f"run_requests?select=id&followup=eq.{vid}&status=in.(pending,starting)"):
+                continue  # already queued (another job saw it first)
             done[vid] = times + [now.isoformat()]
             made_today += 1
+            # save the decision before queueing, so a parallel job does not queue the same part 2
+            sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates", json={
+                "key": "followups", "value": {"date": today, "count": made_today, "done": dict(list(done.items())[-200:])}})
+            sb_rest("POST", "run_requests", json={"lang": lang, "long": 0, "shorts": 1, "followup": vid})
             queued.append(f"{lang} {r['title'][:50]} ({r['vph']:.0f}/h vs median {median:.1f})")
             if made_today >= FOLLOWUPS_PER_DAY:
                 break
         if made_today >= FOLLOWUPS_PER_DAY:
             break
     if queued:
-        keep = dict(list(done.items())[-200:])
-        sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates",
-                json={"key": "followups", "value": {"date": today, "count": made_today, "done": keep}})
         log("double-down: follow-up Shorts queued for " + "; ".join(queued))
+
+
+def plan_viral(trends, niche, used):
+    """Viral-format track: an evergreen-style Short (versus, top 3, budget list, hidden trick, what-if, money/risk)
+    on a subject people search for now, still built only from fresh source articles."""
+    try:
+        return _plan_viral(trends, niche, used)
+    except Exception as e:  # one failed plan must not crash the run with a traceback
+        log(f"viral: planning failed ({str(e)[:160]})")
+        return []
+
+
+def _plan_viral(trends, niche, used):
+    names = VIRAL_FORMATS[LANG]
+    fmt_name = names[(datetime.date.today().toordinal() * 2 + shorts_made_today(names)) % len(names)]
+    for attempt in range(3):
+        pick = llm_json(f"""You plan one YouTube Short for {CHANNEL()} ({niche}), language: {L()['name']}.
+FORMAT: {SHORT_FORMATS[fmt_name]}
+Choose ONE concrete subject that a huge audience ({'India' if LANG == 'hi' else 'the US'}) searches for right now
+(popular phones, iPhone/Samsung/Pixel, ChatGPT/Gemini, WhatsApp, UPI, cheap gadgets, viral AI tools) and that recent
+news articles cover, so the facts can be sourced. Prefer famous brands and things people own.
+Trending now (for inspiration):
+{trends_text(trends[:60])}
+Already covered recently (do not repeat): {json.dumps(used[-40:], ensure_ascii=False)}
+{SAFE_TOPICS}
+Return JSON only: {{"topic": "short name", "search_query": "3-6 word news search query", "angle": "the hook"}}""",
+                        required=("topic", "search_query"))
+        ctx = story_context(pick["search_query"], n=10)
+        if len(ctx) >= 2:
+            break
+        log(f"viral: '{pick['topic']}' has too few sources, trying another subject")
+        used = used + [pick["topic"]]
+    else:
+        return []
+    kw = keyword_research(pick["search_query"])
+    variant = "fast" if fmt_name in FAST_FORMATS else "core"
+    meta = fact_check(write_short(pick, ctx, kw, variant, fmt_name), ctx, "short")
+    meta.update({"variant": variant, "sources": sorted({c["source"] for c in ctx if c["source"]})[:8],
+                 "search_suggestions": kw})
+    log(f"viral: {fmt_name} - '{pick['topic']}' ({len(ctx)} sources)")
+    return [("short", meta)]
 
 
 def plan_followup(vid):
     """Planner for a follow-up Short: same story as a breakout Short, a NEW angle, labelled as part 2."""
     def planner(trends, niche, used):
+        try:
+            return _planner(trends, niche, used)
+        except Exception as e:
+            log(f"follow-up: planning failed ({str(e)[:160]})")
+            return []
+
+    def _planner(trends, niche, used):
         rows = sb_rest("GET", f"insights?select=title,topic,lang&youtube_id=eq.{vid}")
-        if not rows:
+        if not rows or not rows[0].get("topic"):
             log(f"follow-up: {vid} not found")
             return []
         orig = rows[0]
+        part = 2 + len(sb_rest("GET", f"insights?select=youtube_id&followup_of=eq.{vid}"))
         ctx = story_context(orig["topic"])
         if not ctx:
             log(f"follow-up: no fresh sources for '{orig['topic']}'")
             return []
         kw = keyword_research(orig["topic"])
         pick = {"topic": orig["topic"], "angle": (
-            f"FOLLOW-UP (part 2) to our Short '{orig['title']}', which viewers loved. Use a NEW angle and different "
-            "facts (what happens next, reactions, what it means for you); do not repeat the first Short. Mention "
-            "naturally that this is part 2.")}
+            f"FOLLOW-UP (part {part}) to our Short '{orig['title']}', which viewers loved. Use a NEW angle and "
+            "different facts (what happens next, reactions, what it means for you); do not repeat earlier parts. "
+            f"Mention naturally that this is part {part}.")}
         variant = pick_short_variant(0)
-        fmt_names = [f for f in SHORT_FORMATS if f != "hot_take"]
+        fmt_names = [f for f in NEWS_FORMATS if f != "hot_take"]
         meta = fact_check(write_short(pick, ctx, kw, variant, random.choice(fmt_names)), ctx, "short")
         meta.update({"variant": variant, "followup_of": vid, "sources": sorted({c["source"] for c in ctx if c["source"]})[:8],
                      "search_suggestions": kw})
-        log(f"follow-up: part 2 of '{orig['title']}'")
+        log(f"follow-up: part {part} of '{orig['title']}'")
         return [("short", meta)]
     return planner
 
@@ -1925,19 +2173,18 @@ def process_requests():
         log("run requests: none")
         return
     token, repo = os.environ.get("GITHUB_TOKEN"), os.environ.get("GITHUB_REPOSITORY")
-    today = str(datetime.datetime.now(datetime.timezone.utc).date())
-    uploads = len(sb_rest("GET", f"videos?select=id&youtube_id=not.is.null&created_at=gte.{today}T00:00:00Z"))
     if factory_busy(token, repo):
         log("run requests: a factory run is busy, starting the next request later")
         return
     for req in pending[:1]:  # GitHub keeps one waiting run per group: a second dispatch would cancel the first
         want = req["long"] + req["shorts"]
+        uploads = uploads_24h(req["lang"])  # this language's Google project
         if want == 0:
             status = "skipped: nothing requested"
         elif not (token and repo):
             status = "failed: not running in the cloud"
-        elif uploads + want > 11:  # two Google projects: ~5-6 uploads each per day
-            status = f"skipped: daily upload limit ({uploads} today)"
+        elif uploads + want > UPLOAD_CAP:
+            status = f"skipped: daily upload limit ({uploads} in 24 h)"
         else:
             sb_rest("PATCH", f"run_requests?id=eq.{req['id']}", json={"status": "starting"})
             r = requests.post(f"https://api.github.com/repos/{repo}/actions/workflows/factory.yml/dispatches",
@@ -1974,7 +2221,14 @@ def update_goals():
     mode = "watch" if ratio_h < ratio_s else "reach"
     views = {}
     if goals.get("shorts_views"):  # Level 1 via Shorts: 3M Shorts views in 90 days + 500 subs -> always 'reach'
-        shorts = sb_rest("GET", f"insights?select=views,created_at&kind=eq.short&created_at=gte.{days_ago(90)}")
+        shorts, page = [], 0
+        while True:
+            rows_ = sb_rest("GET", f"insights?select=views,created_at&kind=eq.short&created_at=gte.{days_ago(90)}"
+                                   f"&order=created_at.asc&limit=1000&offset={page * 1000}")
+            shorts += rows_
+            if len(rows_) < 1000:
+                break
+            page += 1
         total = sum(r["views"] or 0 for r in shorts)
         week = sum(r["views"] or 0 for r in shorts if r["created_at"] >= days_ago(7))
         rate_v, proj_v = week / 7, total + week / 7 * days_left
@@ -2109,7 +2363,7 @@ def views_per_hour(r):
 
 def scored_videos(lang=None, days=30, min_hours=6):
     """Recent videos (online >= min_hours) ranked by views per hour, with % watched when known."""
-    q = (f"insights?select=youtube_id,kind,lang,title,variant,views,likes,avg_view_pct,created_at&created_at=gte.{days_ago(days)}"
+    q = (f"insights?select=youtube_id,kind,lang,title,variant,format,followup_of,views,likes,avg_view_pct,created_at&created_at=gte.{days_ago(days)}"
          f"&created_at=lt.{(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=min_hours)).strftime('%Y-%m-%dT%H:%M:%SZ')}")
     if lang:
         q += f"&lang=eq.{lang}"
@@ -2174,7 +2428,8 @@ def learn_rules():
         LANG = lang
         market.append(f"[{lang}] " + market_block())
     LANG = current
-    line = lambda r: (f"[{r['lang']} {r['kind']}{'/' + r['variant'] if r.get('variant') else ''}] {r['title']} | "
+    line = lambda r: (f"[{r['lang']} {r['kind']}{'/' + r['variant'] if r.get('variant') else ''}"
+                      f"{'/' + r['format'] if r.get('format') else ''}] {r['title']} | "
                       f"{r['vph']} views/h | {r['views']} views"
                       + (f" | {r['avg_view_pct']:.0f}% watched" if r.get("avg_view_pct") is not None else ""))
     res = llm_json(f"""You are the growth analyst of a YouTube tech news channel ({CHANNEL()}).
@@ -2236,7 +2491,13 @@ def storage_cap():
     if total <= STORAGE_CAP_MB:
         log(f"storage: {total:.0f} MB of 1 GB used")
         return
-    for r in sb_rest("GET", "videos?select=id,preview_path&preview_path=not.is.null&order=created_at.asc"):
+    rows = sb_rest("GET", "videos?select=id,preview_path,thumb_path&order=created_at.asc")
+    known = {p for r in rows for p in (r["preview_path"], r["thumb_path"]) if p}
+    orphans = [p for p in files if p not in known]
+    if orphans:  # files left behind by failed writes or deleted records
+        sb_remove(orphans)
+        total -= sum(files[p] for p in orphans) / 1048576
+    for r in [r for r in rows if r["preview_path"]]:
         if total <= STORAGE_TARGET_MB:
             break
         sb_remove([r["preview_path"]])
@@ -2250,7 +2511,7 @@ def slugify(s):
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:40] or "video"
 
 
-UPLOAD_CAP = 12  # per Google project per rolling day; an upload costs ~100 quota units since Dec 2025 (was 1,600)
+UPLOAD_CAP = 20  # per Google project per rolling day; an upload costs ~100 quota units since Dec 2025 (was 1,600)
 
 
 def uploads_24h(lang):
@@ -2402,6 +2663,7 @@ def main():
     ap.add_argument("--weekly", action="store_true", help="make the long video the weekly Top 10 (default: Sundays)")
     ap.add_argument("--breaking", action="store_true", help="check for big breaking news; make a Short if found")
     ap.add_argument("--followup", help="make a part-2 Short for this breakout Short (YouTube id)")
+    ap.add_argument("--viral", action="store_true", help="make one viral-format Short (versus, top 3, tricks...)")
     ap.add_argument("--project", type=int, choices=(1, 2), default=1, help="with --auth: which Google Cloud project to log in")
     args = ap.parse_args()
     load_env()
@@ -2424,7 +2686,7 @@ def main():
             f()
         except Exception as e:
             log(f"{f.__name__} failed: {str(e)[:200]}")
-    if (args.breaking or args.long or args.shorts) and not args.no_upload:
+    if (args.breaking or args.viral or args.followup or args.long or args.shorts) and not args.no_upload:
         try:
             channel_health()
         except Exception as e:  # unknown health = upload as private, never risk a strike
@@ -2434,12 +2696,17 @@ def main():
         if get_setting("paused", False) is not True:
             run_breaking(args)
         return
-    if maintenance and args.long is None and args.shorts is None:
+    if maintenance and args.long is None and args.shorts is None and not (args.viral or args.followup):
         return
     args.long = 1 if args.long is None else args.long
     args.shorts = 1 if args.shorts is None else args.shorts
     if get_setting("paused", False) is True:
         log("PAUSED from the app (Controls > Pause automation): no new videos this run")
+        return
+    if args.viral:
+        failures = run_videos(args, plan_viral, "viral-format Short")
+        if failures:
+            raise SystemExit(f"{failures} video(s) failed")
         return
     if args.followup:
         if not re.fullmatch(r"[A-Za-z0-9_-]{6,20}", args.followup):

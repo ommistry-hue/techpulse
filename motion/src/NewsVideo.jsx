@@ -194,7 +194,7 @@ const HookTitle = ({ title, L, duo }) => {
   );
 };
 
-const Captions = ({ words, L, duo }) => {
+const Captions = ({ words, L, duo, lift = false }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const t = frame / fps;
@@ -206,7 +206,7 @@ const Captions = ({ words, L, duo }) => {
   if (!group.length || t < group[0][0] - 0.05) return null;
   return (
     <AbsoluteFill style={{ justifyContent: L ? "flex-end" : "center", alignItems: "center",
-      paddingBottom: L ? 70 : 0, paddingTop: L ? 0 : 560, paddingLeft: L ? (duo ? 430 : 0) : 40, paddingRight: L ? (duo ? 430 : 560) : 40 }}>
+      paddingBottom: L ? 70 : 0, paddingTop: L ? 0 : lift ? 880 : 560, paddingLeft: L ? (duo ? 430 : 0) : 40, paddingRight: L ? (duo ? 430 : 560) : 40 }}>
       <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: L ? "0 26px" : "0 40px",
         background: L ? "rgba(11,18,32,.72)" : "transparent", borderRadius: 18, padding: L ? "10px 30px" : 0, maxWidth: L ? 1200 : 1000 }}>
         {group.map(([t0, , w], i) => {
@@ -377,6 +377,102 @@ const DataCard = ({ card, L }) => {
   );
 };
 
+// versus_test Shorts: split screen for the whole video, side A on top, side B below, VS badge on the seam.
+// The panel whose name is being spoken flashes; near the end the winner lights up and the loser dims.
+const TROPHY = "M19 4h-2V3H7v1H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94A5.01 5.01 0 0 0 11 15.9V19H7v2h10v-2h-4v-3.1a5.01 5.01 0 0 0 3.61-2.96C19.08 12.63 21 10.55 21 8V6c0-1.1-.9-2-2-2zM5 8V6h2v3.82C5.84 9.4 5 8.3 5 8zm14 0c0 .3-.84 1.4-2 1.82V6h2v2z";
+const VersusPanel = ({ data, side, versus, L }) => {
+  const frame = useCurrentFrame();
+  const { fps, durationInFrames } = useVideoConfig();
+  const t = frame / fps;
+  const top = side === "left";
+  const color = top ? BLUE : PURPLE;
+  const p = frame / durationInFrames;
+  const hit = Math.max(0, ...(data.hits || []).map(h => (t >= h && t < h + 0.6 ? 1 - (t - h) / 0.6 : 0)));
+  const decided = versus.winner && versus.winAt != null && t >= versus.winAt;
+  const won = decided && versus.winner === side, lost = decided && versus.winner !== side;
+  const winIn = decided ? spring({ frame: frame - Math.round(versus.winAt * fps), fps, config: { damping: 10 } }) : 0;
+  const [head, ...rest] = String(data.name).split(":");
+  const sub = rest.join(":").trim();
+  const media = (extra) => data.video
+    ? <OffthreadVideo src={staticFile(data.src)} muted style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", ...extra }} />
+    : <Img src={staticFile(data.src)} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", ...extra }} />;
+  const box = L ? { left: top ? 0 : "50%", top: 0, width: "50%", height: "100%" }
+    : { left: 0, top: top ? 0 : "50%", width: "100%", height: "50%" };
+  return (
+    <div style={{ position: "absolute", ...box, overflow: "hidden", background: INK }}>
+      <div style={{ position: "absolute", inset: 0, filter: lost ? `grayscale(${0.9 * winIn}) brightness(${1 - 0.55 * winIn})` : `brightness(${1 + hit * 0.25})` }}>
+        {!data.video && media({ objectFit: "cover", filter: "blur(18px) brightness(.45) saturate(1.4)", transform: "scale(1.2)" })}
+        {media({ objectFit: data.video ? "cover" : "contain",
+          transform: `scale(${1.02 + p * 0.12 + hit * 0.05 + (won ? winIn * 0.06 : 0)}) translateX(${(top ? 1 : -1) * (p - 0.5) * 30}px)` })}
+        <div style={{ position: "absolute", inset: 0, background: `linear-gradient(${top ? 180 : 0}deg, ${color}55 0%, transparent 30%, transparent 70%, rgba(7,13,26,.7) 100%)` }} />
+      </div>
+      <div style={{ position: "absolute", inset: 0, boxShadow: `inset 0 0 0 ${won ? 14 : 6 + hit * 8}px ${won ? CYAN : color}${won ? "" : "cc"}` }} />
+      {/* name label: top panel near the seam (bottom), bottom panel near the seam (top); clear of the right-side buttons */}
+      <div style={{ position: "absolute", left: 40, right: L ? 40 : 170, ...(top || L ? { bottom: L ? 60 : 150 } : { top: 150 }),
+        display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 8, transform: `scale(${1 + hit * 0.06})`, transformOrigin: "left center" }}>
+        <div style={{ background: color, color: WHITE, fontFamily: FONT, fontSize: L ? 64 : 84, lineHeight: 1.05, padding: "6px 24px",
+          borderRadius: 14, textTransform: "uppercase", boxShadow: "0 12px 30px rgba(0,0,0,.5)", textShadow: "0 3px 0 rgba(0,0,0,.35)" }}>{head}</div>
+        {(sub || won) && <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          {sub && <div style={{ background: "rgba(7,13,26,.88)", color: CYAN, fontFamily: FONT, fontSize: L ? 46 : 58, padding: "4px 20px",
+            borderRadius: 12, textTransform: "uppercase", border: `3px solid ${color}` }}>{sub}</div>}
+          {won && <div style={{ transform: `scale(${winIn}) rotate(-4deg)`, display: "flex", alignItems: "center", gap: 10, background: NEON,
+            color: WHITE, fontFamily: FONT, fontSize: L ? 48 : 60, padding: "4px 22px", borderRadius: 12, letterSpacing: 3,
+            boxShadow: `0 0 40px ${CYAN}, 0 12px 30px rgba(0,0,0,.5)`, border: `4px solid ${WHITE}`, textShadow: "0 3px 0 rgba(0,0,0,.35)" }}>
+            <svg width={L ? 46 : 58} height={L ? 46 : 58} viewBox="0 0 24 24"><path fill="#fff" d={TROPHY} /></svg>WINNER</div>}
+        </div>}
+      </div>
+    </div>
+  );
+};
+
+const VersusSplit = ({ versus, L }) => {
+  const frame = useCurrentFrame();
+  const pulse = 1 + Math.sin(frame / 5) * 0.05;
+  const seam = L ? { left: "50%", top: 0, bottom: 0, width: 12, marginLeft: -6 } : { top: "50%", left: 0, right: 0, height: 12, marginTop: -6 };
+  return (
+    <AbsoluteFill>
+      <VersusPanel data={versus.left} side="left" versus={versus} L={L} />
+      <VersusPanel data={versus.right} side="right" versus={versus} L={L} />
+      <div style={{ position: "absolute", ...seam, background: NEON, boxShadow: `0 0 30px ${CYAN}` }} />
+      <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+        <div style={{ width: L ? 200 : 230, height: L ? 200 : 230, borderRadius: 999, background: NEON, border: `8px solid ${WHITE}`,
+          display: "flex", justifyContent: "center", alignItems: "center", transform: `scale(${pulse}) rotate(-8deg)`,
+          boxShadow: `0 0 60px ${CYAN}, 0 20px 50px rgba(0,0,0,.6)`, fontFamily: FONT, fontSize: L ? 100 : 118, color: WHITE,
+          textShadow: "0 5px 0 rgba(0,0,0,.4)" }}>VS</div>
+      </AbsoluteFill>
+      {versus.label && <div style={{ position: "absolute", ...(L ? { left: "50%", top: 40, transform: "translateX(-50%)" } : { left: 40, top: 960 - 34 }),
+        background: "rgba(7,13,26,.92)", color: CYAN, border: `3px solid ${CYAN}`, borderRadius: 12, fontFamily: FONT,
+        fontSize: L ? 44 : 50, padding: "2px 18px", textTransform: "uppercase", letterSpacing: 2, maxWidth: L ? 600 : 290,
+        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{versus.label}</div>}
+    </AbsoluteFill>
+  );
+};
+
+// top3_unique Shorts: "#3", "#2", "#1" slam into the centre, then settle as a badge in the top-left corner.
+const CountBadge = ({ n, L }) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const inn = spring({ frame, fps, config: { damping: 9, stiffness: 180 } });
+  const move = interpolate(frame, [fps * 0.75, fps * 1.15], [0, 1], { ...clamp, easing: Easing.inOut(Easing.cubic) });
+  const flash = interpolate(frame, [0, 6], [0.55, 0], clamp);
+  const shake = frame < 12 ? Math.sin(frame * 2.2) * (12 - frame) * 1.5 : 0;
+  // centre (big) -> corner (small)
+  const cx = L ? 960 : 540, cy = L ? 480 : 760, ex = L ? 150 : 150, ey = L ? 210 : 330;
+  const x = cx + (ex - cx) * move + shake, y = cy + (ey - cy) * move;
+  const scale = (L ? 1.6 : 2.1) * (1 - move) + move;
+  return (
+    <AbsoluteFill style={{ pointerEvents: "none" }}>
+      {flash > 0 && <AbsoluteFill style={{ background: WHITE, opacity: flash }} />}
+      <AbsoluteFill style={{ background: `rgba(7,13,26,${0.45 * (1 - move)})` }} />
+      <div style={{ position: "absolute", left: x, top: y, transform: `translate(-50%, -50%) scale(${Math.max(0, inn) * scale}) rotate(-6deg)`,
+        background: NEON, borderRadius: 26, border: `6px solid ${WHITE}`, padding: "0 30px", display: "flex", alignItems: "baseline",
+        boxShadow: `0 0 50px ${CYAN}aa, 0 20px 50px rgba(0,0,0,.6)`, fontFamily: FONT, color: WHITE, textShadow: "0 6px 0 rgba(0,0,0,.4)" }}>
+        <span style={{ fontSize: 90, opacity: 0.85 }}>#</span><span style={{ fontSize: 170, lineHeight: 1.1 }}>{n}</span>
+      </div>
+    </AbsoluteFill>
+  );
+};
+
 const speakerAt = (turns, t) => {
   let s = turns.length ? turns[0][2] : null;
   for (const [a, , who] of turns) { if (a <= t) s = who; else break; }
@@ -384,7 +480,7 @@ const speakerAt = (turns, t) => {
 };
 
 export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mouth = [], title, channel, music = null,
-  turns = [], cards = [], character = "max", ui = { news: "TECH NEWS", fact: "FACT", subscribe: "SUBSCRIBE", like: "LIKE", comment: "COMMENT", share: "SHARE" }, durationInFrames }) => {
+  turns = [], cards = [], versus = null, countdown = [], character = "max", ui = { news: "TECH NEWS", fact: "FACT", subscribe: "SUBSCRIBE", like: "LIKE", comment: "COMMENT", share: "SHARE" }, durationInFrames }) => {
   useFont();
   const { fps } = useVideoConfig();
   const frame = useCurrentFrame();
@@ -393,7 +489,7 @@ export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mo
   const talk = useTalk(audio ? staticFile(audio) : null);
   const ctaStart = L ? Math.max(0, durationInFrames - fps * 8) : durationInFrames;  // Shorts loop: no end sequence
   const spans = useMemo(() => speechSpans(words), [words]);
-  const events = useMemo(() => [...sections.map(s => s.start), ...facts.map(f => f.t)], [sections, facts]);
+  const events = useMemo(() => [...sections.map(s => s.start), ...facts.map(f => f.t), ...countdown.map(c => c.t)], [sections, facts, countdown]);
   const gestures = useMemo(() => buildGestures(fps, durationInFrames, events, ctaStart), [fps, durationInFrames, events, ctaStart]);
   const gi = Math.max(0, gestures.findIndex(g => frame >= g.start && frame < g.end));
   const g = gestures[gi], prev = gestures[gi - 1] || g;
@@ -407,12 +503,12 @@ export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mo
     return <Presenter character={who} frame={frame} mouth={active ? mouthAt(mouth, t, talk) : "X"}
       pose={active ? g.type : "idle"} prevPose={active ? prev.type : "idle"} blend={active ? blend : 1}
       talk={active ? talk : 0} brow={active ? brow : 0}
-      look={active && g.type !== "point" ? 0 : -1} size={L ? (duo ? 480 : 560) : 520} />;  // -1 = toward the other host / the cards
+      look={active && g.type !== "point" ? 0 : -1} size={L ? (duo ? 480 : 560) : versus ? 380 : 520} />;  // -1 = toward the other host / the cards
   };
 
   return (
     <AbsoluteFill style={{ background: INK }}>
-      {scenes.length ? scenes.map((s, i) => {
+      {versus ? <VersusSplit versus={versus} L={L} /> : scenes.length ? scenes.map((s, i) => {
         const from = Math.round(s.start * fps), dur = Math.max(1, Math.round((s.end - s.start) * fps));
         return (
           <Sequence key={i} from={from} durationInFrames={dur + 12} layout="none">
@@ -437,7 +533,7 @@ export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mo
         </Sequence>
       ))}
 
-      {cards.map((c, i) => (
+      {cards.filter(c => !(versus && c.type === "versus")).map((c, i) => (
         <Sequence key={`k${i}`} from={Math.round(c.t * fps)} durationInFrames={Math.round(fps * 4)} layout="none">
           <DataCard card={c} L={L} />
           <Audio src={staticFile("pop.wav")} volume={0.35} />
@@ -454,7 +550,19 @@ export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mo
       )}
 
       <Sequence durationInFrames={fps * 4} layout="none"><HookTitle title={title} L={L} duo={duo} /></Sequence>
-      {(!L || frame >= fps * 3.4) && <Captions words={words} L={L} duo={duo} />}
+      {countdown.map((c, i) => (
+        <Sequence key={`n${i}`} from={Math.round(c.t * fps)} durationInFrames={i + 1 < countdown.length
+          ? Math.max(1, Math.round(countdown[i + 1].t * fps) - Math.round(c.t * fps)) : undefined} layout="none">
+          <CountBadge n={c.n} L={L} />
+          <Audio src={staticFile(i === countdown.length - 1 ? "ding.wav" : "hit.wav")} volume={0.45} />
+        </Sequence>
+      ))}
+      {(!L || frame >= fps * 3.4) && <Captions words={words} L={L} duo={duo} lift={!!versus} />}
+      {versus && versus.winner && versus.winAt != null && (
+        <Sequence from={Math.round(versus.winAt * fps)} durationInFrames={Math.round(fps * 1.2)} layout="none">
+          <Audio src={staticFile("ding.wav")} volume={0.45} />
+        </Sequence>
+      )}
       {L && <Sequence from={ctaStart} layout="none"><EndCTA L={L} ui={ui} /></Sequence>}
       {L && durationInFrames > fps * 60 && (
         <Sequence from={Math.round(durationInFrames * 0.4)} durationInFrames={Math.round(fps * 3.8)} layout="none">
