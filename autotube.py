@@ -2535,6 +2535,30 @@ def upload_room(reserve=0):
     return cap - channel_uploads_24h() - reserve
 
 
+def probe_due():
+    """At most one probe per day: an upload above the cap tells whether YouTube raised the channel's limit
+    (e.g. after 'Advanced features' verification) - fully automatic, no one has to watch for it."""
+    st = get_setting("upload_probe", {}) or {}
+    return st.get("date") != str(datetime.date.today())
+
+
+def note_upload_limit(count, ok):
+    """Learn the real limit: a success above the cap raises 'upload_cap'; a refusal records today's probe."""
+    if not sb_on():
+        return
+    cap = int(get_setting("upload_cap", CHANNEL_UPLOAD_CAP) or CHANNEL_UPLOAD_CAP)
+    upsert = lambda key, value: sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates",
+                                        json={"key": key, "value": value})
+    if ok and count > cap:
+        upsert("upload_cap", count)
+        log(f"upload limit: YouTube accepted upload #{count} in 24 h -> daily cap raised to {count}")
+    elif not ok:
+        upsert("upload_probe", {"date": str(datetime.date.today()), "limit_at": count})
+        if count < cap:  # the limit is lower than we thought
+            upsert("upload_cap", max(1, count))
+        log(f"upload limit: YouTube refused upload #{count + 1} in 24 h (limit still {count})")
+
+
 def uploads_24h(lang):
     """Uploads in the last 24 h for this language = this language's Google project usage (EN -> 1, HI -> 2)."""
     if not sb_on():
@@ -2604,6 +2628,10 @@ def run_videos(args, planner, note):
         plain_short = note.endswith("Shorts") and not getattr(args, "long", 0)
         want = (getattr(args, "long", 0) or 0) + (getattr(args, "shorts", 0) or 0) if note.endswith("Shorts") else 1
         room = upload_room(reserve=2 if plain_short else 0)
+        if room < max(1, want) and not plain_short and probe_due():
+            log("upload limit probe: trying one upload above the current cap (YouTube may have raised the limit)")
+            args.long, args.shorts = (0, 1) if note.endswith("Shorts") else (getattr(args, "long", 0), getattr(args, "shorts", 0))
+            room = want = 1
         if room < max(1, want):
             log(f"skipped: YouTube's daily channel upload limit is nearly used ({channel_uploads_24h()} uploads in "
                 f"24 h); this slot is left for higher-priority videos")
@@ -2653,7 +2681,14 @@ def run_videos(args, planner, note):
             vid = None
             if not args.no_upload:
                 privacy = privacy_for(meta)
-                vid = upload(r["video"], meta["title"], desc, clean_tags(meta), kind == "short", privacy)
+                before = channel_uploads_24h()
+                try:
+                    vid = upload(r["video"], meta["title"], desc, clean_tags(meta), kind == "short", privacy)
+                except Exception as e:
+                    if "exceeded the number of videos" in str(e):
+                        note_upload_limit(before, ok=False)
+                    raise
+                note_upload_limit(before + 1, ok=True)
                 log(f"[{kind}] uploaded https://youtu.be/{vid} ({privacy}{', held by fact-check' if meta.get('hold') else ''})")
                 # YouTube rejects comments on private videos; publish_pending() posts it once public.
                 comment = meta.get("pinned_comment")
