@@ -49,7 +49,9 @@ LANGS = {
                     "subscribe": "Subscribe to {c} for daily tech & AI news in minutes.",
                     "more_short": "Watch the full stories on our channel.", "more_long": "Quick versions in our Shorts.",
                     "ai": "Voice and visuals are AI-assisted. Facts are based on the sources listed above.",
-                    "credits": "Image credits (Wikimedia Commons / stock):", "full_story": "▶ Full story:"},
+                    "credits": "Image credits (Wikimedia Commons / stock):", "full_story": "▶ Full story:",
+                    "topics": "Topics in this video:"},
+           "wait": "WAIT FOR IT 👀",
            "style": "Natural spoken American English."},
     "hi": {"name": "Hindi", "geo": "IN", "news": "hl=en-IN&gl=IN&ceid=IN:en", "suggest_hl": "hi",
            "voices": {"male": "hi-IN-MadhurNeural", "female": "hi-IN-SwaraNeural"},
@@ -62,7 +64,9 @@ LANGS = {
                     "subscribe": "रोज़ की Tech और AI news के लिए {c} को Subscribe करें।",
                     "more_short": "पूरी कहानी हमारे channel पर देखें।", "more_long": "छोटे updates हमारे Shorts में देखें।",
                     "ai": "Voice और visuals AI की मदद से बनाए गए हैं। Facts ऊपर दिए गए sources पर आधारित हैं।",
-                    "credits": "Image credits (Wikimedia Commons / stock):", "full_story": "▶ पूरी कहानी देखें:"},
+                    "credits": "Image credits (Wikimedia Commons / stock):", "full_story": "▶ पूरी कहानी देखें:",
+                    "topics": "इस वीडियो के topics:"},
+           "wait": "अंत तक देखें 👀",
            "style": ("Conversational Hindi in Devanagari script, the way popular Indian tech YouTubers speak: keep product"
                      " names and everyday tech words (AI, app, phone, launch, update, chip, feature, price) in English"
                      " using Latin letters. Simple words, friendly tone, like talking to a friend. Mention what it means"
@@ -294,10 +298,14 @@ SEO_RULES = """SEO rules:
 - title: primary keyword in the first 40 characters, specific + curiosity, honest (no clickbait lies), no hashtags,
   no ALL CAPS sentences, no quotes around it.
 - description_hook: ONE sentence that starts with the primary keyword and says what viewers learn.
-- summary: 2-3 plain sentences with natural related search phrases.
-- tags: 15-20 tags; mix exact search phrases from the suggestions, the topic, company/product names and broad
-  tags like 'tech news'. No '#', no '<' or '>'.
-- hashtags: exactly 3, CamelCase, no spaces, most relevant first (e.g. "TechNews", "iPhone", "Apple")."""
+- summary: 4-6 natural sentences (a real mini-article, not a keyword list) that work in 8-12 related search phrases
+  people type (product + feature, product + price, "vs" comparisons, "explained", "news today", year).
+- topics: 5-8 short phrases that describe what the video covers (shown as a bullet list), each a real search phrase.
+- tags: 30-40 tags, ALL relevant to this exact video: exact search phrases from the suggestions, product/company
+  names, model numbers, common misspellings people type, "vs" phrases, and broad tags like 'tech news', 'ai news',
+  'technology'. No '#', no '<' or '>'. Never add unrelated trending tags (YouTube treats that as spam).
+- hashtags: 10-12 relevant hashtags, CamelCase, no spaces, the 3 most important first (YouTube shows those above
+  the title; more than 15 makes YouTube ignore all of them)."""
 
 
 def lang_rules():
@@ -473,7 +481,8 @@ Return JSON only:
  "summary": "...",
  "key_points": ["3-5 short bullet points of what the video covers"],
  "tags": ["..."],
- "hashtags": ["...", "...", "..."],
+ "hashtags": ["10-12 hashtags"],
+ "topics": ["5-8 search phrases"],
  "thumbnail_text": "2-4 punchy words for the thumbnail",
  "pinned_comment": "one engaging question for viewers",
  "products": ["0-3 products from the story people can buy now (phones, laptops, gadgets, consoles), as {{\"name\", \"search\"}} objects with the exact product name from the sources and amazon search words; empty list otherwise"],
@@ -500,8 +509,11 @@ Return JSON only: {{"sections": [{SECTION_SHAPE}]}}""", required=("sections",), 
 
 def write_long(pick, ctx, kw):
     lo, hi = LENGTHS["long"]
+    tease = ("\nWAIT-FOR-IT: right after the hook, a host teases the biggest surprise for later in the video (\"stick "
+             "around - the most surprising part is coming up\"), and that sourced surprise is revealed in the second half. "
+             "Never tease anything the video does not deliver.\n") if random.random() < WAIT_SHARE else ""
     return write_dialogue(
-        f"STORY for {CHANNEL()}, a tech & AI news channel: {pick['topic']} - angle: {pick.get('angle', '')}\n\n"
+        f"STORY for {CHANNEL()}, a tech & AI news channel: {pick['topic']} - angle: {pick.get('angle', '')}\n{tease}\n"
         f"{facts_block(ctx, kw)}", lo, hi, "6-8",
         "hook, why it is trending now, background, key details, reactions (attribute to outlets), what happens next, "
         "what it means for YOU the viewer, closing.")
@@ -593,8 +605,17 @@ def pick_short_variant(i):
     return list(SHORT_VARIANTS)[(datetime.date.today().toordinal() + i) % len(SHORT_VARIANTS)]
 
 
-def write_short(pick, ctx, kw, variant="core", fmt_name=None, _retry=True):
+WAIT_SHARE = 0.35  # share of Shorts that tease a surprise ("wait for it") and save it for the end
+
+
+def write_short(pick, ctx, kw, variant="core", fmt_name=None, _retry=True, wait=None):
     lo, hi, secs = SHORT_VARIANTS[variant]
+    wait = random.random() < WAIT_SHARE if wait is None else wait
+    wait_rule = ("\nWAIT-FOR-IT Short: in the first two sentences, tease that the best part comes at the end (e.g. "
+                 "\"wait for the last one\", \"wait till you see the price\"; in Hindi: \"आख़िर तक देखिए\"). Keep the single "
+                 "most surprising SOURCED fact for the end and really deliver it - never tease something the video does not "
+                 "show. ORDER: hook + tease, facts and take, the subscribe line, THEN the surprise stated clearly with "
+                 "its number/fact, THEN the loop half-sentence.") if wait else ""
     if LANG == "hi":  # Hindi words are longer when spoken: same seconds need ~25% fewer words
         lo, hi = round(lo * 0.75), round(hi * 0.75)
     fmt_name = fmt_name or random.choice(list(SHORT_FORMATS))
@@ -603,7 +624,7 @@ STORY: {pick['topic']} - angle: {pick.get('angle', '')}
 
 {facts_block(ctx, kw)}
 
-FORMAT for this Short: {SHORT_FORMATS[fmt_name]}
+FORMAT for this Short: {SHORT_FORMATS[fmt_name]}{wait_rule}
 Shorts rules (viewers decide in the first second whether to swipe away):
 - First sentence: max 10 words, names the product/company and the stakes. Never start with "So", "Hey guys",
   "Did you know" or the channel name.
@@ -629,7 +650,8 @@ Return JSON only:
  "description_hook": "...",
  "summary": "...",
  "tags": ["..."],
- "hashtags": ["...", "...", "..."],
+ "hashtags": ["10-12 hashtags"],
+ "topics": ["5-8 search phrases"],
  "pinned_comment": "one engaging question",
  "products": ["0-3 products from the story people can buy now (phones, laptops, gadgets, consoles), as {{\"name\", \"search\"}} objects with the exact product name from the sources and amazon search words; empty list otherwise"],
  "facts": ["2-3 on-screen fact cards, max 7 words each, only sourced facts"],
@@ -641,11 +663,12 @@ Return JSON only:
         raise ValueError("script came back malformed")
     if LANG == "hi" and devanagari_share(meta["script"]) < 0.4 and _retry:
         log("[short] Hindi script came back in Latin letters, rewriting")  # the Hindi voice needs Devanagari
-        return write_short(pick, ctx, kw, variant, fmt_name, _retry=False)
+        return write_short(pick, ctx, kw, variant, fmt_name, _retry=False, wait=wait)
     if len(meta["script"].split()) < lo * 0.75:  # only when clearly too short: padding hurts Shorts
         log(f"[short] '{meta['topic']}' too short, expanding")
         meta["script"] = expand(meta["script"], lo, hi)
     meta["format"] = fmt_name
+    meta["wait_for_it"] = wait
     return meta
 
 
@@ -703,7 +726,9 @@ and cards (a card that is not sourced becomes null).
 - Not supported: rewrite that sentence as hedged context ("reports suggest", "not confirmed yet") or remove it.
 Keep everything else (language, tone, hook, length, structure) the same. When hedging, name the outlet
 ("The Verge reports...") instead of vague phrases. For a Short: keep the first sentence under 10 words and punchy,
-and keep the last sentence leading back into the first.
+and keep the last sentence leading back into the first. If the script teases something for later ("wait for...",
+"stick around..."), check that it is clearly delivered with a sourced fact; if not, add the sourced payoff or
+remove the tease (a tease that is never paid off is misleading).
 verdict = "pass" (nothing changed), "fixed" (you corrected some sentences), or "fail" (the main story or title is not
 supported by the headlines at all, or is misleading).
 Also YouTube safety: safe = false if the video touches any of these: {SAFE_TOPICS}
@@ -1371,7 +1396,7 @@ def countdown_times(meta, words, duration):
 
 
 def render_motion(work, kind, words, duration, clips, title, sections, host=None, mouth=(), facts=(), turns=(),
-                  cards=(), versus=None, countdown=()):
+                  cards=(), versus=None, countdown=(), wait=None):
     """Animated style (Remotion): presenter character, kinetic captions, headline/fact cards.
     Assets are served from the work folder."""
     fmt = FORMATS[kind]
@@ -1403,7 +1428,7 @@ def render_motion(work, kind, words, duration, clips, title, sections, host=None
              "sections": [{"start": round(t, 2), "heading": h} for t, h in sections], "title": title,
              "channel": os.environ.get("CHANNEL_NAME", "TechPulse").upper(),
              "character": (host or {}).get("character", "max"), "mouth": list(mouth), "ui": L()["ui"], "lang": LANG,
-             "music": music, "turns": list(turns), "cards": list(cards), "versus": versus, "countdown": list(countdown),
+             "music": music, "turns": list(turns), "cards": list(cards), "versus": versus, "countdown": list(countdown), "wait": wait,
              "facts": [{"t": round(t, 2), "text": x} for t, x in facts]}
     (work / "props.json").write_text(json.dumps(props, ensure_ascii=False), encoding="utf-8")
     npx = shutil.which("npx") or "npx"
@@ -1454,7 +1479,8 @@ def make_video(work, kind, meta, host=None):
             countdown = countdown_times(meta, words, duration) if kind == "short" else []
             video = render_motion(work, kind, words, duration, clips, title, section_list, host, mouth,
                                   fact_times(meta, kind, words, duration, section_list), turns,
-                                  card_times(meta, kind, duration, section_list), versus, countdown)
+                                  card_times(meta, kind, duration, section_list), versus, countdown,
+                                  L()["wait"] if kind == "short" and meta.get("wait_for_it") else None)
         except Exception as e:  # never lose a day's video: fall back to the classic slideshow
             log(f"[{kind}] animated render failed ({str(e)[:150]}), using classic style")
     if video is None:
@@ -1528,11 +1554,15 @@ def analytics_client():
     return build("youtubeAnalytics", "v2", credentials=creds)
 
 
+BASE_HASHTAGS = {"en": ["TechNews", "Technology", "Tech"], "hi": ["TechNewsHindi", "TechNews", "Technology"]}
+
+
 def hashtags(meta, short, topic):
+    """Up to 15 hashtags (more makes YouTube ignore all of them); the first 3 show above the title."""
     tags = [re.sub(r"[^\w]", "", h.lstrip("#")) for h in meta.get("hashtags", [])]
-    tags = [t for t in tags if t] or ["TechNews", "AI", re.sub(r"\W", "", topic.title())]
-    tags = list(dict.fromkeys(tags))[:3]
-    return " ".join(f"#{t}" for t in (["Shorts"] + tags[:2] if short else tags))
+    tags = [t for t in tags if t] + [re.sub(r"\W", "", topic.title())] + BASE_HASHTAGS.get(LANG, [])
+    tags = [t for t in dict.fromkeys(tags) if t.lower() != "shorts" and len(t) <= 30]
+    return " ".join(f"#{t}" for t in ((["Shorts"] + tags[:13]) if short else tags[:14]))
 
 
 def clean_tags(meta, limit=480):
@@ -1596,6 +1626,8 @@ def description(meta, short, topic, credits, chapter_list=()):
         parts.append(meta["summary"].strip())
     if meta.get("key_points") and not short:
         parts.append(tx["in_video"] + "\n" + "\n".join(f"- {p}" for p in meta["key_points"][:5]))
+    if meta.get("topics"):
+        parts.append(tx["topics"] + "\n" + "\n".join(f"- {t}" for t in meta["topics"][:8] if isinstance(t, str)))
     if chapter_list:
         parts.append("Chapters:\n" + "\n".join(f"{ts(t)} {h}" for t, h in chapter_list))
     if meta.get("sources"):

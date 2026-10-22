@@ -473,6 +473,22 @@ const CountBadge = ({ n, L }) => {
   );
 };
 
+// "Wait for it" Shorts: a pulsing pill under the header once the hook title has gone (curiosity -> watch to the end)
+const WaitBadge = ({ text }) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const inn = spring({ frame, fps, config: { damping: 12 } });
+  const out = interpolate(frame, [fps * 4.4, fps * 5], [1, 0], clamp);
+  const pulse = 1 + Math.sin(frame / 5) * 0.04;
+  return (
+    <AbsoluteFill style={{ alignItems: "center", paddingTop: 300, opacity: out }}>
+      <div style={{ transform: `scale(${(0.6 + inn * 0.4) * pulse})`, background: "#ff3b5c", color: WHITE, fontFamily: FONT,
+        fontSize: 78, padding: "14px 40px", borderRadius: 999, letterSpacing: 2, boxShadow: "0 0 40px rgba(255,59,92,.6), 0 18px 50px rgba(0,0,0,.5)",
+        border: "5px solid #fff" }}>{text}</div>
+    </AbsoluteFill>
+  );
+};
+
 const speakerAt = (turns, t) => {
   let s = turns.length ? turns[0][2] : null;
   for (const [a, , who] of turns) { if (a <= t) s = who; else break; }
@@ -480,7 +496,7 @@ const speakerAt = (turns, t) => {
 };
 
 export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mouth = [], title, channel, music = null,
-  turns = [], cards = [], versus = null, countdown = [], character = "max", ui = { news: "TECH NEWS", fact: "FACT", subscribe: "SUBSCRIBE", like: "LIKE", comment: "COMMENT", share: "SHARE" }, durationInFrames }) => {
+  turns = [], cards = [], versus = null, countdown = [], wait = null, character = "max", ui = { news: "TECH NEWS", fact: "FACT", subscribe: "SUBSCRIBE", like: "LIKE", comment: "COMMENT", share: "SHARE" }, durationInFrames }) => {
   useFont();
   const { fps } = useVideoConfig();
   const frame = useCurrentFrame();
@@ -550,6 +566,12 @@ export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mo
       )}
 
       <Sequence durationInFrames={fps * 4} layout="none"><HookTitle title={title} L={L} duo={duo} /></Sequence>
+      {wait && !L && (
+        <Sequence from={Math.round(fps * 3.6)} durationInFrames={Math.round(fps * 5)} layout="none">
+          <WaitBadge text={wait} />
+          <Audio src={staticFile("whoosh.wav")} volume={0.3} />
+        </Sequence>
+      )}
       {countdown.map((c, i) => (
         <Sequence key={`n${i}`} from={Math.round(c.t * fps)} durationInFrames={i + 1 < countdown.length
           ? Math.max(1, Math.round(countdown[i + 1].t * fps) - Math.round(c.t * fps)) : undefined} layout="none">
