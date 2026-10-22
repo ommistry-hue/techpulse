@@ -351,19 +351,33 @@ def topic_rules(niche, used):
             f"Do NOT pick these already-covered topics: {json.dumps(used, ensure_ascii=False)}")
 
 
-def pick_topics(trends, niche, used, n_long, n_shorts):
-    data = llm_json(f"""You run a viral tech & AI news YouTube channel. Today's trending items:
+def pick_topics(trends, niche, used, n_long, n_shorts, _retry=True):
+    """Topics for the run. The model sometimes returns fewer than asked (an empty 'long' list once silently cost a
+    long video): ask once more, then take what is missing from the other list's extras."""
+    data = _pick_topics(trends, niche, used, n_long, n_shorts)
+    longs = [p for p in data.get("long") or [] if isinstance(p, dict) and p.get("topic")][:n_long]
+    shorts = [p for p in data.get("shorts") or [] if isinstance(p, dict) and p.get("topic")]
+    if (len(longs) < n_long or len(shorts) < n_shorts) and _retry:
+        log(f"topic picker returned {len(longs)} long / {len(shorts)} Shorts, asking again")
+        return pick_topics(trends, niche, used, n_long, n_shorts, _retry=False)
+    while len(longs) < n_long and len(shorts) > n_shorts:
+        longs.append(shorts.pop())
+    return longs, shorts[:n_shorts]
+
+
+def _pick_topics(trends, niche, used, n_long, n_shorts):
+    return llm_json(f"""You run a viral tech & AI news YouTube channel. Today's trending items:
 {trends_text(trends)}
 
 {topic_rules(niche, used)}
 
 {performance_block()}
 
-Pick {n_long} story for a long video and {n_shorts} DIFFERENT stories for Shorts (all different from each other).
+Pick exactly {n_long} story for a long video and exactly {n_shorts + 1} DIFFERENT stories for Shorts (all different
+from each other; the last Short is a backup). Never leave a list empty.
 Return JSON only:
 {{"long": [{{"topic": "short topic name", "search_query": "3-6 word news search query", "angle": "why viewers care"}}],
  "shorts": [{{"topic": "...", "search_query": "...", "angle": "..."}}]}}""", required=("long", "shorts"))
-    return data["long"][:n_long], data["shorts"][:n_shorts]
 
 
 def story_context(query, n=10):
