@@ -496,7 +496,7 @@ const speakerAt = (turns, t) => {
 };
 
 export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mouth = [], title, channel, music = null,
-  turns = [], cards = [], versus = null, countdown = [], wait = null, character = "max", ui = { news: "TECH NEWS", fact: "FACT", subscribe: "SUBSCRIBE", like: "LIKE", comment: "COMMENT", share: "SHARE" }, durationInFrames }) => {
+  turns = [], cards = [], versus = null, countdown = [], wait = null, emotions = [], character = "max", ui = { news: "TECH NEWS", fact: "FACT", subscribe: "SUBSCRIBE", like: "LIKE", comment: "COMMENT", share: "SHARE" }, durationInFrames }) => {
   useFont();
   const { fps } = useVideoConfig();
   const frame = useCurrentFrame();
@@ -510,7 +510,9 @@ export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mo
   const gi = Math.max(0, gestures.findIndex(g => frame >= g.start && frame < g.end));
   const g = gestures[gi], prev = gestures[gi - 1] || g;
   const blend = interpolate(frame - g.start, [0, 9], [0, 1], { ...clamp, easing: Easing.inOut(Easing.quad) });
-  const brow = events.some(e => t >= e && t < e + 1.1) || frame < fps * 1.2 ? 1 : 0;
+  const emo = (emotions.find(([a, b]) => t >= a && t < b) || [0, 0, "neutral"]);
+  const lively = (emo[2] === "excited" || emo[2] === "surprised") && t < emo[0] + 1.4;  // react at the start of the line
+  const brow = events.some(e => t >= e && t < e + 1.1) || frame < fps * 1.2 || lively ? 1 : 0;
   const duo = turns.length > 0;
   const speaker = duo ? speakerAt(turns, t) : character;
   // In a conversation the current speaker acts (mouth, gestures); the other listens and looks at them.

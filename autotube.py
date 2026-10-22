@@ -823,8 +823,8 @@ def plan_videos(trends, niche, used, n_long, n_shorts, weekly=False):
 
 
 # ---------- 3. Voice + captions ----------
-async def _tts(text, voice, rate, mp3):
-    comm = edge_tts.Communicate(text, voice, rate=rate, boundary="WordBoundary")
+async def _tts(text, voice, rate, mp3, pitch="+0Hz", volume="+0%"):
+    comm = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch, volume=volume, boundary="WordBoundary")
     words = []
     with open(mp3, "wb") as f:
         async for c in comm.stream():
@@ -846,18 +846,79 @@ def pick_voice(i):
     return {"gender": g, "voice": L()["voices"][g], "character": CHARACTERS[g]}
 
 
-def tts(text, mp3, kind, voice=None):
+# Emotion -> voice delivery (rate %, pitch Hz, volume %), applied per sentence on top of the base pace.
+EMOTION_PROSODY = {"excited": (8, 8, 10), "surprised": (3, 14, 10), "serious": (-7, -6, 0), "curious": (0, 6, 0),
+                   "calm": (-4, -3, -5), "neutral": (0, 0, 0)}
+SURPRISE_WORDS = re.compile(r"\b(wait|shock\w*|insane|crazy|unbelievable|surpris\w*|whoa|wow|just|finally|record|"
+                            r"biggest|first ever|never)\b|हैरान|चौंक|गज़ब|कमाल|पहली बार", re.I)
+SERIOUS_WORDS = re.compile(r"\b(risk\w*|danger\w*|warn\w*|ban\w*|leak\w*|hack\w*|scam\w*|fraud|lawsuit|fine[ds]?|"
+                           r"crisis|layoffs?|jobs?|privacy|breach|attack|careful)\b|खतरा|धोखा|सावधान|नुकसान|हैक", re.I)
+
+
+def sentence_emotion(s, first=False):
+    """Cheap, free emotion tag per sentence (no extra AI call): hook = excited; shock/number lines = surprised;
+    risk lines = serious; questions = curious; exclamations = excited."""
+    t = s.strip()
+    if first:
+        return "excited"
+    if SERIOUS_WORDS.search(t):
+        return "serious"
+    if SURPRISE_WORDS.search(t) or re.search(r"[$₹€]\s?\d|\d+\s?(%|percent|crore|lakh|million|billion)", t, re.I):
+        return "surprised"
+    if t.endswith("?"):
+        return "curious"
+    if t.endswith("!"):
+        return "excited"
+    return "neutral"
+
+
+def split_sentences(text):
+    return [s for s in re.split(r"(?<=[.!?।])\s+", text.strip()) if s.strip()]
+
+
+def tts(text, mp3, kind, voice=None, emotion="neutral"):
     for attempt in range(4):
         try:
             # English a little brisk for energy; Hindi at natural pace so it stays easy to follow.
             rate = os.environ.get("TTS_RATE") or (("+8%" if LANG == "hi" else "+12%") if kind == "short"
                                                   else ("+0%" if LANG == "hi" else "+6%"))
-            return asyncio.run(_tts(text, voice or VOICES["male"], rate, mp3))
+            dr, dp, dv = EMOTION_PROSODY.get(emotion, (0, 0, 0))
+            rate = f"{int(rate.strip('%')) + dr:+d}%"
+            return asyncio.run(_tts(text, voice or VOICES["male"], rate, mp3, f"{dp:+d}Hz", f"{dv:+d}%"))
         except Exception as e:
             if attempt == 3:
                 raise
             log(f"[{kind}] TTS failed ({e}), retrying")
             time.sleep(10 * (attempt + 1))
+
+
+def tts_emotional(text, work, kind, voice):
+    """Single host: each sentence voiced with its own emotion (pace, pitch, energy), trimmed to the spoken words and
+    joined with short natural pauses. Returns (words, emotion spans [[start, end, emotion]]); writes voice.mp3."""
+    sentences = split_sentences(text)
+    if len(sentences) < 2:
+        return tts(text, work / "voice.mp3", kind, voice, "excited"), [[0, 99, "excited"]]
+    rate, gap = 24000, 0.12
+    ff(["-f", "lavfi", "-i", f"anullsrc=r={rate}:cl=mono", "-t", str(gap), "gap.wav"], work)
+    words, spans, parts, t = [], [], [], 0.0
+    for i, s in enumerate(sentences):
+        emo = sentence_emotion(s, first=i == 0)
+        mp3 = work / f"sent_{i:03d}.mp3"
+        w = tts(s, mp3, kind, voice, emo)
+        if not w:
+            continue
+        a, b = max(0.0, w[0][0] - 0.05), w[-1][1] + 0.15  # cut edge-tts's lead-in/trailing silence
+        ff(["-i", mp3.name, "-ss", f"{a:.3f}", "-to", f"{b:.3f}", "-ar", str(rate), "-ac", "1", f"sent_{i:03d}.wav"], work)
+        dur = audio_duration(work / f"sent_{i:03d}.wav")
+        words += [(x0 - a + t, x1 - a + t, x) for x0, x1, x in w]
+        spans.append([round(t, 3), round(t + dur, 3), emo])
+        parts += [f"sent_{i:03d}.wav"] + (["gap.wav"] if i < len(sentences) - 1 else [])
+        t += dur + (gap if i < len(sentences) - 1 else 0)
+    (work / "voice_list.txt").write_text("".join(f"file '{p}'\n" for p in parts), encoding="utf-8")
+    ff(["-f", "concat", "-safe", "0", "-i", "voice_list.txt", "-c:a", "libmp3lame", "-b:a", "96k", "-y", "voice.mp3"], work)
+    for p in list(work.glob("sent_*")) + [work / "gap.wav"]:
+        p.unlink(missing_ok=True)
+    return words, spans
 
 
 def tts_dialogue(lines, work, kind):
@@ -867,20 +928,27 @@ def tts_dialogue(lines, work, kind):
     gap, rate = 0.28, 24000
     ff(["-f", "lavfi", "-i", f"anullsrc=r={rate}:cl=mono", "-t", str(gap), "gap.wav"], work)
     words, turns, parts, t = [], [], [], 0.0
+    emotions = []
     for i, line in enumerate(lines):
         mp3 = work / f"line_{i:03d}.mp3"
-        w = tts(line["text"], mp3, kind, voices[line["speaker"]])
+        emo = sentence_emotion(line["text"], first=i == 0)
+        w = tts(line["text"], mp3, kind, voices[line["speaker"]], emo)
         ff(["-i", mp3.name, "-ar", str(rate), "-ac", "1", f"line_{i:03d}.wav"], work)
         dur = audio_duration(work / f"line_{i:03d}.wav")
         words += [(a + t, b + t, x) for a, b, x in w]
         turns.append([round(t, 3), round(t + dur, 3), line["speaker"]])
+        emotions.append([round(t, 3), round(t + dur, 3), emo])
         parts += [f"line_{i:03d}.wav", "gap.wav"]
         t += dur + gap
     (work / "voice_list.txt").write_text("".join(f"file '{p}'\n" for p in parts), encoding="utf-8")
     ff(["-f", "concat", "-safe", "0", "-i", "voice_list.txt", "-c:a", "libmp3lame", "-b:a", "96k", "voice.mp3"], work)
     for p in list(work.glob("line_*")) + [work / "gap.wav"]:
         p.unlink(missing_ok=True)
+    TTS_EMOTIONS[str(work)] = emotions
     return words, turns
+
+
+TTS_EMOTIONS = {}  # work folder -> emotion spans of the last dialogue voice (read by make_video)
 
 
 def card_times(meta, kind, duration, section_list):
@@ -1407,7 +1475,7 @@ def countdown_times(meta, words, duration):
 
 
 def render_motion(work, kind, words, duration, clips, title, sections, host=None, mouth=(), facts=(), turns=(),
-                  cards=(), versus=None, countdown=(), wait=None):
+                  cards=(), versus=None, countdown=(), wait=None, emotions=()):
     """Animated style (Remotion): presenter character, kinetic captions, headline/fact cards.
     Assets are served from the work folder."""
     fmt = FORMATS[kind]
@@ -1439,7 +1507,7 @@ def render_motion(work, kind, words, duration, clips, title, sections, host=None
              "sections": [{"start": round(t, 2), "heading": h} for t, h in sections], "title": title,
              "channel": os.environ.get("CHANNEL_NAME", "TechPulse").upper(),
              "character": (host or {}).get("character", "max"), "mouth": list(mouth), "ui": L()["ui"], "lang": LANG,
-             "music": music, "turns": list(turns), "cards": list(cards), "versus": versus, "countdown": list(countdown), "wait": wait,
+             "music": music, "turns": list(turns), "cards": list(cards), "versus": versus, "countdown": list(countdown), "wait": wait, "emotions": list(emotions),
              "facts": [{"t": round(t, 2), "text": x} for t, x in facts]}
     (work / "props.json").write_text(json.dumps(props, ensure_ascii=False), encoding="utf-8")
     npx = shutil.which("npx") or "npx"
@@ -1463,13 +1531,18 @@ def make_video(work, kind, meta, host=None):
     fmt = FORMATS[kind]
     work.mkdir(parents=True, exist_ok=True)
     host = host or pick_voice(0)
-    turns = []
+    turns, emotions = [], []
     if meta.get("dialogue"):
         log(f"[{kind}] voice (two hosts, {len(meta['dialogue'])} lines)")
         words, turns = tts_dialogue(meta["dialogue"], work, kind)
+        emotions = TTS_EMOTIONS.pop(str(work), [])
     else:
-        log(f"[{kind}] voice ({host['gender']} host)")
-        words = tts(meta["script"], work / "voice.mp3", kind, host["voice"])
+        log(f"[{kind}] voice ({host['gender']} host, with emotion per sentence)")
+        try:
+            words, emotions = tts_emotional(meta["script"], work, kind, host["voice"])
+        except Exception as e:  # never lose the video over the emotional voice: plain voice instead
+            log(f"[{kind}] emotional voice failed ({str(e)[:120]}), plain voice")
+            words = tts(meta["script"], work / "voice.mp3", kind, host["voice"])
     write_ass(words, work / "subs.ass", fmt)
     duration = audio_duration(work / "voice.mp3")
     log(f"[{kind}] voice {duration:.0f}s, downloading visuals")
@@ -1491,7 +1564,7 @@ def make_video(work, kind, meta, host=None):
             video = render_motion(work, kind, words, duration, clips, title, section_list, host, mouth,
                                   fact_times(meta, kind, words, duration, section_list), turns,
                                   card_times(meta, kind, duration, section_list), versus, countdown,
-                                  L()["wait"] if kind == "short" and meta.get("wait_for_it") else None)
+                                  L()["wait"] if kind == "short" and meta.get("wait_for_it") else None, emotions)
         except Exception as e:  # never lose a day's video: fall back to the classic slideshow
             log(f"[{kind}] animated render failed ({str(e)[:150]}), using classic style")
     if video is None:
