@@ -71,8 +71,24 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      # apt once hung 40+ min on a runner: time-box it and fall back to a static ffmpeg build from GitHub
+      - name: Install ffmpeg
+        timeout-minutes: 12
+        run: |
+          for i in 1 2; do
+            timeout 240 sudo apt-get update -qq -o Acquire::Retries=3 \
+              && timeout 240 sudo apt-get install -y -qq --no-install-recommends ffmpeg && break
+            echo "apt attempt $i failed or timed out"
+          done
+          if ! command -v ffmpeg >/dev/null; then
+            curl -fsSL --retry 3 --max-time 300 -o /tmp/ffmpeg.tar.xz \
+              https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+            tar -xJf /tmp/ffmpeg.tar.xz -C /tmp
+            sudo cp /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/
+          fi
+          ffmpeg -version | head -1
       - run: pip install -q -r requirements.txt
+        timeout-minutes: 10
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -80,6 +96,7 @@ jobs:
           cache-dependency-path: motion/package-lock.json
       - name: Install animation renderer (Remotion)
         working-directory: motion
+        timeout-minutes: 15
         run: |
           npm ci --no-audit --no-fund
           npx remotion browser ensure
@@ -92,7 +109,7 @@ jobs:
         run: |
           if ! ls tools/bin/Rhubarb-Lip-Sync-*/rhubarb >/dev/null 2>&1; then
             mkdir -p tools/bin
-            curl -sSL -o /tmp/rhubarb.zip "https://github.com/DanielSWolf/rhubarb-lip-sync/releases/download/v${RHUBARB_VERSION}/Rhubarb-Lip-Sync-${RHUBARB_VERSION}-Linux.zip"
+            curl -sSL --retry 3 --max-time 180 -o /tmp/rhubarb.zip "https://github.com/DanielSWolf/rhubarb-lip-sync/releases/download/v${RHUBARB_VERSION}/Rhubarb-Lip-Sync-${RHUBARB_VERSION}-Linux.zip"
             unzip -q /tmp/rhubarb.zip -d tools/bin
           fi
           chmod +x tools/bin/Rhubarb-Lip-Sync-*/rhubarb

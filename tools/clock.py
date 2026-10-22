@@ -50,7 +50,7 @@ def failed_slots(now):
     for x in runs:
         name = x["displayTitle"].removeprefix("Factory ")
         made = datetime.datetime.fromisoformat(x["createdAt"].replace("Z", "+00:00"))
-        if (x["conclusion"] == "failure" and now - made < RETRY_WINDOW and slot_inputs(name)
+        if (x["conclusion"] in ("failure", "timed_out", "cancelled") and now - made < RETRY_WINDOW and slot_inputs(name)
                 and f"Factory {name} retry" not in titles):
             out.append(name)
     return out
