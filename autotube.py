@@ -487,7 +487,7 @@ Return JSON only:
  "pinned_comment": "one engaging question for viewers",
  "products": ["0-3 products from the story people can buy now (phones, laptops, gadgets, consoles), as {{\"name\", \"search\"}} objects with the exact product name from the sources and amazon search words; empty list otherwise"],
  "sections": [{SECTION_SHAPE}],
- "keywords": ["{n_sections * 2} image search terms"]}}""", required=("topic", "title", "sections", "keywords"), timeout=timeout)
+ "keywords": ["{n_sections * 2} image search terms: concrete visible things (exact product, device, company, app, place), 2-4 words, never news outlet names or abstract words"]}}""", required=("topic", "title", "sections", "keywords"), timeout=timeout)
     finalize_sections(meta)
     for _ in range(2):
         n = len(meta["script"].split())
@@ -657,7 +657,7 @@ Return JSON only:
  "facts": ["2-3 on-screen fact cards, max 7 words each, only sourced facts"],
  "card": null,
  "script": "...",
- "keywords": ["6 image search terms"]}}""", required=("topic", "title", "script", "keywords"))
+ "keywords": ["6 image search terms: concrete visible things from the story (exact product, device, company logo, app, place), 2-4 words each; never news outlet names, never abstract words"]}}""", required=("topic", "title", "script", "keywords"))
     meta["script"] = clean_script(meta["script"]).get("script") or ""
     if not meta["script"]:
         raise ValueError("script came back malformed")
@@ -1016,6 +1016,10 @@ WIKI_UA = {"User-Agent": "TechPulseBot/1.0 (https://ommistry-hue.github.io/techp
 # Media titles with these words are skipped (sensitive imagery is a YouTube policy risk and off-brand).
 SENSITIVE_MEDIA = re.compile(r"\b(accident|death|dead|killed|kill|crash|war|weapon|gun|blood|injur\w*|victim|corpse|"
                              r"nude|naked|protest|riot|terror\w*|bomb|explosion|fire|disaster|funeral)\b", re.I)
+# Media that matches the words but shows something else (and trailers/music can trigger Content ID claims).
+OFF_TOPIC_MEDIA = re.compile(r"\b(trailer|gameplay|game|film|movie|poster|album|music|song|concert|episode|"
+                             r"cosplay|defective|broken|cracked|damaged|repair|teardown|parody|meme|advert\w*|"
+                             r"commercial|lancement|bande|pyramid\w*|camel|temple|church|statue)\b", re.I)
 
 
 def wikimedia_search(query):
@@ -1034,10 +1038,10 @@ def wikimedia_search(query):
             continue
         name = p["title"].removeprefix("File:")
         score = len(words & set(re.findall(r"[a-z0-9]+", name.lower())))
-        if SENSITIVE_MEDIA.search(name):
+        if SENSITIVE_MEDIA.search(name) or OFF_TOPIC_MEDIA.search(name):
             continue
         # Too few shared words = usually off-topic (and showing the wrong real person is misleading).
-        if words and score < min(2, len(words)):
+        if words and score < min(2, len(words), max(1, len(words) - 1)):
             continue
         md = ii.get("extmetadata", {})
         artist = html.unescape(re.sub(r"<[^>]+>", "", md.get("Artist", {}).get("value", "Unknown"))).strip()[:60]
@@ -1060,9 +1064,10 @@ def wikimedia_video_search(query):
         vi = (p.get("videoinfo") or [{}])[0]
         name = p["title"].removeprefix("File:")
         score = len(words & set(re.findall(r"[a-z0-9]+", name.lower())))
-        if SENSITIVE_MEDIA.search(name):
+        if SENSITIVE_MEDIA.search(name) or OFF_TOPIC_MEDIA.search(name):
             continue
-        if (words and score < min(2, len(words))) or not 6 <= (vi.get("duration") or 0) <= 180:  # short files only
+        # video titles are vaguer than photo titles: every query word must match
+        if (words and score < len(words)) or not 6 <= (vi.get("duration") or 0) <= 180:  # short files only
             continue
         ders = [d for d in vi.get("derivatives", []) if "webm" in d.get("type", "") and 360 <= (d.get("height") or 0) <= 480]
         if not ders:
@@ -1148,9 +1153,15 @@ def fetch_wiki_clip(v, path, folder):
     return False
 
 
+NEWS_OUTLETS = re.compile(r"\b(ars technica|the verge|techcrunch|engadget|wired|reuters|bloomberg|cnbc|cnet|"
+                          r"gizmodo|zdnet|windows central|macrumors|9to5\w+|tweaktown|android (?:authority|police|central)|"
+                          r"tom's (?:guide|hardware)|times of india|ndtv|hindustan times|gadgets 360|news)\b", re.I)
+
+
 def fetch_clips(keywords, folder, fmt, need):
     """Spread `need` clips across keywords in script order, distinct sources.
     Returns [{"path", "is_image", "credit"}]."""
+    keywords = [k for k in keywords if isinstance(k, str) and k.strip() and not NEWS_OUTLETS.search(k)]
     if not keywords:
         return []
     results = {kw: search_footage(kw, fmt) for kw in keywords}
