@@ -763,6 +763,24 @@ Return JSON only: {{"verdict": "...", "safe": true, "safety_reason": "", "issues
     return meta
 
 
+def write_checked(write, ctx, kind):
+    """Fully automatic fact-checking: a script that fails the check is rewritten once from scratch with the problems
+    listed; if it still fails it is dropped (never uploaded), so no video ever waits private for a human review.
+    `write(note)` returns a script; `note` is extra instruction text for the rewrite."""
+    meta = fact_check(write(""), ctx, kind)
+    if not meta.get("hold"):
+        return meta
+    issues = meta["fact_check"]["issues"]
+    if any(str(i).startswith("SAFETY") for i in issues):
+        raise RuntimeError(f"dropped: unsafe topic ({str(issues[0])[:120]})")
+    log(f"[{kind}] fact-check failed, rewriting from scratch")
+    meta = fact_check(write(". REWRITE - an earlier draft had these problems, avoid them and state only facts the "
+                            "sources support: " + "; ".join(str(i) for i in issues)[:800]), ctx, kind)
+    if meta.get("hold"):
+        raise RuntimeError("dropped: script failed the fact-check twice")
+    return meta
+
+
 def plan_weekly(trends, niche):
     """Pick the week's 10 biggest stories (this channel's last 7 days + today's trends) and write the countdown."""
     recent = []
@@ -785,6 +803,8 @@ Order them 10 (smallest) to 1 (biggest). Return JSON only:
     log(f"[weekly] {len(stories)} stories with sources")
     all_ctx = [c for s in stories for c in s["ctx"]]
     meta = fact_check(write_weekly(stories), all_ctx, "long")
+    if meta.get("hold"):
+        raise RuntimeError("weekly countdown failed the fact-check")  # caller makes a normal long video instead
     meta["sources"] = sorted({c["source"] for c in all_ctx if c["source"]})[:12]
     meta["search_suggestions"] = keyword_research("tech news this week")
     return meta
@@ -810,10 +830,13 @@ def plan_videos(trends, niche, used, n_long, n_shorts, weekly=False):
                 log(f"[{kind}] '{p['topic']}': {len(ctx)} source headlines, {len(kw)} search suggestions")
                 if kind == "short":
                     variant = pick_short_variant(i)
-                    meta = fact_check(writer(p, ctx, kw, variant, pick_short_format(i)), ctx, kind)
+                    fmt = pick_short_format(i)
+                    meta = write_checked(lambda note: writer({**p, "angle": p.get("angle", "") + note}, ctx, kw,
+                                                             variant, fmt), ctx, kind)
                     meta["variant"] = variant
                 else:
-                    meta = fact_check(writer(p, ctx, kw), ctx, kind)
+                    meta = write_checked(lambda note: writer({**p, "angle": p.get("angle", "") + note}, ctx, kw),
+                                         ctx, kind)
                 meta["sources"] = sorted({c["source"] for c in ctx if c["source"]})[:8]
                 meta["search_suggestions"] = kw
                 jobs.append((kind, meta))
@@ -2242,7 +2265,8 @@ Return JSON only: {{"topic": "short name", "search_query": "3-6 word news search
         return []
     kw = keyword_research(pick["search_query"])
     variant = "fast" if fmt_name in FAST_FORMATS else "core"
-    meta = fact_check(write_short(pick, ctx, kw, variant, fmt_name), ctx, "short")
+    meta = write_checked(lambda note: write_short({**pick, "angle": pick.get("angle", "") + note}, ctx, kw, variant,
+                                                  fmt_name), ctx, "short")
     meta.update({"variant": variant, "sources": sorted({c["source"] for c in ctx if c["source"]})[:8],
                  "search_suggestions": kw})
     log(f"viral: {fmt_name} - '{pick['topic']}' ({len(ctx)} sources)")
@@ -2276,7 +2300,9 @@ def plan_followup(vid):
             f"Mention naturally that this is part {part}.")}
         variant = pick_short_variant(0)
         fmt_names = [f for f in NEWS_FORMATS if f != "hot_take"]
-        meta = fact_check(write_short(pick, ctx, kw, variant, random.choice(fmt_names)), ctx, "short")
+        fmt = random.choice(fmt_names)
+        meta = write_checked(lambda note: write_short({**pick, "angle": pick["angle"] + note}, ctx, kw, variant, fmt),
+                             ctx, "short")
         meta.update({"variant": variant, "followup_of": vid, "sources": sorted({c["source"] for c in ctx if c["source"]})[:8],
                      "search_suggestions": kw})
         log(f"follow-up: part {part} of '{orig['title']}'")
@@ -2716,8 +2742,9 @@ Return JSON only: {{"breaking": false}} or
         return []
     log(f"breaking: '{pick['topic']}' ({len(ctx)} sources)")
     kw = keyword_research(pick.get("search_query") or pick["topic"])
-    meta = fact_check(write_short({**pick, "angle": pick.get("angle", "") + ". This is BREAKING news from the last few "
-                                   "hours: open with what just happened."}, ctx, kw, "fast", "hot_take"), ctx, "short")
+    meta = write_checked(lambda note: write_short({**pick, "angle": pick.get("angle", "") + ". This is BREAKING news from "
+                                                   "the last few hours: open with what just happened." + note}, ctx, kw,
+                                                  "fast", "hot_take"), ctx, "short")
     meta.update({"variant": "breaking", "sources": sorted({c["source"] for c in ctx if c["source"]})[:8],
                  "search_suggestions": kw})
     return [("short", meta)]

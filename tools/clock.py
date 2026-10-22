@@ -18,6 +18,7 @@ VIRAL = [("03:13", "hi"), ("09:13", "hi"), ("15:13", "hi"), ("18:13", "en")]
 BREAKING = [f"{h:02d}:29" for h in range(0, 24, 3)]   # breaking-news check every 3 hours
 CATCH_UP = datetime.timedelta(hours=3)                # a late slot still runs within 3 h; older ones are skipped
 BREAKING_WINDOW = datetime.timedelta(minutes=90)
+RETRY_WINDOW = datetime.timedelta(hours=6)            # a slot whose factory run FAILED is re-run once within 6 h
 RUN_FOR = datetime.timedelta(hours=5, minutes=40)     # job limit is 6 h; the next clock run takes over
 
 
@@ -34,6 +35,37 @@ def started_slots():
         return None if r.returncode else {x["displayTitle"] for x in json.loads(r.stdout)}
     except ValueError:
         return None  # unknown: skip this minute rather than risk running a slot twice
+
+
+def failed_slots(now):
+    """Slots whose factory run failed (AI providers down, network drop, ...) and have not been retried yet:
+    the clock re-runs each once, so a bad minute never costs a day's video and nobody has to step in."""
+    r = gh("run", "list", "--workflow", "factory.yml", "--limit", "60", "--json", "displayTitle,conclusion,createdAt")
+    try:
+        runs = [] if r.returncode else json.loads(r.stdout)
+    except ValueError:
+        return []
+    titles = {x["displayTitle"] for x in runs}
+    out = []
+    for x in runs:
+        name = x["displayTitle"].removeprefix("Factory ")
+        made = datetime.datetime.fromisoformat(x["createdAt"].replace("Z", "+00:00"))
+        if (x["conclusion"] == "failure" and now - made < RETRY_WINDOW and slot_inputs(name)
+                and f"Factory {name} retry" not in titles):
+            out.append(name)
+    return out
+
+
+def slot_inputs(name):
+    """Workflow inputs for a slot name like '2026-10-22 12:13 en' or '... hi viral' (None: not retryable)."""
+    parts = name.split()
+    if len(parts) == 4 and parts[3] == "viral":
+        return ["-f", f"lang={parts[2]}", "-f", "mode=viral"]
+    if len(parts) == 3 and parts[2] in ("en", "hi"):
+        for hm, lang, long_, shorts in SLOTS:
+            if hm == parts[1] and lang == parts[2]:
+                return ["-f", f"lang={lang}", "-f", f"long={long_}", "-f", f"shorts={shorts}"]
+    return None  # breaking-news checks are time-sensitive and not retried
 
 
 def factory_busy():
@@ -84,6 +116,8 @@ def main():
     sent, last_publish = set(), None
     while (now := datetime.datetime.now(datetime.timezone.utc)) - start < RUN_FOR:
         pending = [(slot, inputs) for slot, inputs in due(now) if slot not in sent]
+        if not pending and not factory_busy():
+            pending = [(f"{name} retry", slot_inputs(name)) for name in failed_slots(now) if f"{name} retry" not in sent]
         # Factory runs share one concurrency group where GitHub keeps only ONE waiting run (a second would cancel
         # the first), so start one slot at a time and only when no factory run is busy; late slots catch up.
         if pending and not factory_busy():
