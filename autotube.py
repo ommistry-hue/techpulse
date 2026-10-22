@@ -681,7 +681,7 @@ def same_writing(before, after):
     return dev(after) >= dev(before) * 0.6
 
 
-def fact_check(meta, ctx, kind):
+def fact_check(meta, ctx, kind, _retry=True):
     """Second, strict pass: every claim must be backed by the source headlines. Unsupported sentences are softened or
     removed; if the story itself is unsupported the video is held private (auto-publish skips it)."""
     body = (json.dumps(meta["sections"], ensure_ascii=False) if kind == "long"
@@ -724,7 +724,10 @@ Return JSON only: {{"verdict": "...", "safe": true, "safety_reason": "", "issues
                 meta["script"] = fixed["script"]
                 meta["facts"] = fixed.get("facts") or res.get("facts", meta.get("facts", []))
                 meta["card"] = fixed.get("card", res.get("card"))
-            else:  # the rewrite came back malformed or in another script: keep the original, hold it for review
+            elif _retry:  # the rewrite came back malformed or in another script: ask once more
+                log(f"[{kind}] fact-check rewrite malformed, checking again")
+                return fact_check(meta, ctx, kind, _retry=False)
+            else:  # still malformed: keep the original, hold it for review
                 log(f"[{kind}] fact-check rewrite rejected (malformed or wrong script)")
                 v = "fail"
         if res.get("title"):
@@ -1665,7 +1668,7 @@ def upload(path, title, desc, tags, short, privacy=None):
             _, resp = req.next_chunk()  # resumable: a retry continues where the dropped chunk stopped
         except Exception as e:
             tries += 1
-            if tries > 5:
+            if tries > 5 or "exceeded the number of videos" in str(e):  # daily channel limit: retrying can't help
                 raise
             log(f"  upload interrupted ({str(e)[:80]}), retry {tries}/5")
             time.sleep(10 * tries)
@@ -2514,6 +2517,24 @@ def slugify(s):
 UPLOAD_CAP = 20  # per Google project per rolling day; an upload costs ~100 quota units since Dec 2025 (was 1,600)
 
 
+CHANNEL_UPLOAD_CAP = 10  # YouTube refused the 11th upload in 24 h ("exceeded the number of videos they may upload")
+
+
+def channel_uploads_24h():
+    """Uploads to the channel in the last 24 h, all languages (YouTube's daily upload limit is per channel)."""
+    if not sb_on():
+        return 0
+    since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return len(sb_rest("GET", f"videos?select=id&youtube_id=not.is.null&created_at=gte.{since}"))
+
+
+def upload_room(reserve=0):
+    """Free uploads in YouTube's rolling 24 h channel limit (setting 'upload_cap' can raise it as the channel grows),
+    minus `reserve` kept back for higher-priority videos (long videos, viral formats, breaking news, part 2s)."""
+    cap = int(get_setting("upload_cap", CHANNEL_UPLOAD_CAP) or CHANNEL_UPLOAD_CAP)
+    return cap - channel_uploads_24h() - reserve
+
+
 def uploads_24h(lang):
     """Uploads in the last 24 h for this language = this language's Google project usage (EN -> 1, HI -> 2)."""
     if not sb_on():
@@ -2578,6 +2599,17 @@ def run_videos(args, planner, note):
     trends = fetch_trends(L()["geo"])
     if not trends:
         raise RuntimeError("No trends from any source")
+    if not args.no_upload:
+        # plain news Short slots keep 2 uploads free for long videos, viral formats, breaking news and part 2s
+        plain_short = note.endswith("Shorts") and not getattr(args, "long", 0)
+        want = (getattr(args, "long", 0) or 0) + (getattr(args, "shorts", 0) or 0) if note.endswith("Shorts") else 1
+        room = upload_room(reserve=2 if plain_short else 0)
+        if room < max(1, want):
+            log(f"skipped: YouTube's daily channel upload limit is nearly used ({channel_uploads_24h()} uploads in "
+                f"24 h); this slot is left for higher-priority videos")
+            return 0
+        if want > room:  # e.g. long + Short but only 1 upload left: make the long video only
+            args.shorts = max(0, room - (getattr(args, "long", 0) or 0))
     log(f"Planning: {note} (uploads via Google Cloud project {PROJECT})")
     jobs = planner(trends, niche, used)
     if not jobs:
