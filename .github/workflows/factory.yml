@@ -4,7 +4,7 @@ name: Factory (make + upload videos)
 # Two projects: English uploads use project 1, Hindi uploads project 2 -> 4 scheduled uploads each per day,
 # leaving 2 per project for breaking news (the cap is checked before every breaking upload).
 # Started by the Clock workflow (tools/clock.py) on a fixed UTC plan, because GitHub drops many cron runs:
-#   EN 12:17 (1 long + 1 Short), 16:43, 21:23 (1 Short each) | HI 01:33, 07:47 (1 Short each), 13:37 (1 long + 1 Short)
+#   one slot every 3 h (9 uploads/day, YouTube allows ~10 per channel per 24 h) - see SLOTS/VIRAL in tools/clock.py
 #   Breaking-news check every 3 hours at :29 (a Short only when something big just broke)
 run-name: Factory ${{ inputs.slot || 'manual' }}
 on:

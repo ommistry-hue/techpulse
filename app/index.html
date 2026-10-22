@@ -229,19 +229,16 @@ const db = supabase.createClient(cfg.url, cfg.key);
 const S = { videos: [], insights: [], stats: [], runs: [], settings: {}, requests: [], thumbs: {}, openId: null,
             vfilter: "all", ifilter: "all" };
 
-// Mirrors the cloud schedule (.github/workflows/factory.yml) and the daily themes in autotube.py.
+// Mirrors the cloud schedule (tools/clock.py): one slot every 3 h, 9 uploads/day inside YouTube's ~10/24 h limit.
 const SCHEDULE = [
-  { utc: [1, 33], lang: "hi", what: "1 Short" },
-  { utc: [7, 47], lang: "hi", what: "1 Short" },
-  { utc: [12, 17], lang: "en", what: "1 long video + 1 Short" },
-  { utc: [13, 37], lang: "hi", what: "1 long video + 1 Short" },
-  { utc: [16, 43], lang: "en", what: "1 Short" },
-  { utc: [21, 23], lang: "en", what: "1 Short" },
-  { utc: [5, 13], lang: "hi", what: "1 viral-format Short" },
-  { utc: [10, 3], lang: "hi", what: "1 Short" },
-  { utc: [14, 13], lang: "en", what: "1 viral-format Short" },
+  { utc: [0, 13], lang: "en", what: "1 Short" },
+  { utc: [3, 13], lang: "hi", what: "1 viral-format Short" },
+  { utc: [6, 13], lang: "en", what: "1 Short" },
+  { utc: [9, 13], lang: "hi", what: "1 viral-format Short" },
+  { utc: [12, 13], lang: "en", what: "1 long video + 1 Short" },
   { utc: [15, 13], lang: "hi", what: "1 viral-format Short" },
-  { utc: [19, 3], lang: "en", what: "1 viral-format Short" },
+  { utc: [18, 13], lang: "en", what: "1 viral-format Short" },
+  { utc: [21, 13], lang: "en", what: "1 Short" },
 ];
 const DAY_FOCUS = {
   en: ["AI tools and AI drama", "Phone launches and leaks", "Hacks, outages and data leaks",

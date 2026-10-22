@@ -2644,6 +2644,15 @@ def channel_uploads_24h():
     return len(sb_rest("GET", f"videos?select=id&youtube_id=not.is.null&created_at=gte.{since}"))
 
 
+JUNK_TOKEN = re.compile(r"(?<![\w-])[a-z]{1,4}\d{3,}[a-z]*(?![\w-])")  # e.g. "dw065e" an LLM leaked into a title
+
+
+def tidy_title(title, topic=""):
+    """Drop stray ID-like tokens (lowercase letters + 3+ digits) the model sometimes leaks into titles."""
+    clean = re.sub(r"\s{2,}", " ", JUNK_TOKEN.sub("", title)).strip(" -:|")
+    return clean or topic or title
+
+
 def upload_room(reserve=0):
     """Free uploads in YouTube's rolling 24 h channel limit (setting 'upload_cap' can raise it as the channel grows),
     minus `reserve` kept back for higher-priority videos (long videos, viral formats, breaking news, part 2s)."""
@@ -2740,10 +2749,10 @@ def run_videos(args, planner, note):
     if not trends:
         raise RuntimeError("No trends from any source")
     if not args.no_upload:
-        # plain news Short slots keep 2 uploads free for long videos, viral formats, breaking news and part 2s
+        # plain news Short slots keep 1 upload free for long videos, viral formats, breaking news and part 2s
         plain_short = note.endswith("Shorts") and not getattr(args, "long", 0)
         want = (getattr(args, "long", 0) or 0) + (getattr(args, "shorts", 0) or 0) if note.endswith("Shorts") else 1
-        room = upload_room(reserve=2 if plain_short else 0)
+        room = upload_room(reserve=1 if plain_short else 0)
         if room < max(1, want) and not plain_short and probe_due():
             log("upload limit probe: trying one upload above the current cap (YouTube may have raised the limit)")
             args.long, args.shorts = (0, 1) if note.endswith("Shorts") else (getattr(args, "long", 0), getattr(args, "shorts", 0))
@@ -2780,6 +2789,7 @@ def run_videos(args, planner, note):
             work = run_dir / f"{i}_{kind}_{slugify(meta['topic'])}"
             work.mkdir(parents=True, exist_ok=True)
             (work / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+            meta["title"] = tidy_title(meta["title"], meta["topic"])
             log(f"=== {kind}: {meta['topic']} | {meta['title']}")
             host = pick_voice(i)
             meta["host"] = host

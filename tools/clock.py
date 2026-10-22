@@ -8,11 +8,13 @@ import os
 import subprocess
 import time
 
-# (UTC time, language, long videos, Shorts): EN 1 long + 3 Shorts, HI 1 long + 4 Shorts (India = biggest Shorts market)
-SLOTS = [("12:17", "en", 1, 1), ("16:43", "en", 0, 1), ("21:23", "en", 0, 1),
-         ("01:33", "hi", 0, 1), ("07:47", "hi", 0, 1), ("10:03", "hi", 0, 1), ("13:37", "hi", 1, 1)]
-# Viral-format track on top (versus tests, top 3, budget lists, tricks): HI 10:43 + 20:43 IST, EN 10:13 + 15:03 ET
-VIRAL = [("05:13", "hi"), ("15:13", "hi"), ("14:13", "en"), ("19:03", "en")]
+# YouTube allows ~10 uploads per channel per rolling 24 h. The old plan wanted 13 and bunched them in the afternoon,
+# so morning slots found the window full and were skipped. Now 9 uploads, one slot every 3 h, 1 spare for breaking
+# news / part 2s. Data (Oct 16-22): EN news Shorts 100-800 views, HI viral Shorts ~60, HI plain/long only 10-28.
+# (UTC time, language, long videos, Shorts)
+SLOTS = [("00:13", "en", 0, 1), ("06:13", "en", 0, 1), ("12:13", "en", 1, 1), ("21:13", "en", 0, 1)]
+# Viral-format track (versus tests, top 3, budget lists, tricks): HI 08:43 / 14:43 / 20:43 IST, EN 2:13 pm ET
+VIRAL = [("03:13", "hi"), ("09:13", "hi"), ("15:13", "hi"), ("18:13", "en")]
 BREAKING = [f"{h:02d}:29" for h in range(0, 24, 3)]   # breaking-news check every 3 hours
 CATCH_UP = datetime.timedelta(hours=3)                # a late slot still runs within 3 h; older ones are skipped
 BREAKING_WINDOW = datetime.timedelta(minutes=90)
