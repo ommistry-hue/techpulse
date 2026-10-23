@@ -2020,11 +2020,19 @@ def days_ago(n):
     return (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=n)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def repeats(topic, recent):
+    """True if `topic` shares most of its key words with a recent topic ("Google Chrome Update" ~ "Chrome update")."""
+    key = lambda t: {w for w in re.findall(r"\w+", t.lower()) if len(w) > 2 and w not in ("the", "and", "new", "google")}
+    a = key(topic)
+    return bool(a) and any(len(a & key(r)) >= max(1, round(0.6 * min(len(a), len(key(r)) or 1))) for r in recent)
+
+
 def used_topics():
     if sb_on():
         since = days_ago(14)
-        return [r["topic"] for r in sb_rest("GET", f"videos?select=topic&lang=eq.{LANG}&created_at=gte.{since}")
-                if r.get("topic")]
+        # oldest first, so callers' used[-40:] really is the most recent 40 (unordered rows let repeats slip through)
+        return [r["topic"] for r in sb_rest("GET", f"videos?select=topic&lang=eq.{LANG}&created_at=gte.{since}"
+                                                    "&order=created_at.asc") if r.get("topic")]
     history = json.loads(HISTORY.read_text(encoding="utf-8")) if HISTORY.exists() else []
     return [h["topic"] for h in history[-80:] if h.get("topic")]
 
@@ -2250,9 +2258,9 @@ def plan_viral(trends, niche, used):
     on a subject people search for now, still built only from fresh source articles."""
     try:
         return _plan_viral(trends, niche, used)
-    except Exception as e:  # one failed plan must not crash the run with a traceback
+    except Exception as e:  # fail the run (no traceback noise) so the clock retries the slot once
         log(f"viral: planning failed ({str(e)[:160]})")
-        return []
+        raise SystemExit(1)
 
 
 def _plan_viral(trends, niche, used):
@@ -2270,6 +2278,10 @@ Already covered recently (do not repeat): {json.dumps(used[-40:], ensure_ascii=F
 {SAFE_TOPICS}
 Return JSON only: {{"topic": "short name", "search_query": "3-6 word news search query", "angle": "the hook"}}""",
                         required=("topic", "search_query"))
+        if repeats(pick["topic"], used[-15:]):  # the model ignored the list (made "Chrome Update" twice in 12 h)
+            log(f"viral: '{pick['topic']}' repeats a recent video, trying another subject")
+            used = used + [pick["topic"]]
+            continue
         ctx = story_context(pick["search_query"], n=10)
         if len(ctx) >= 2:
             break
@@ -2794,7 +2806,9 @@ def run_videos(args, planner, note):
         plain_short = note.endswith("Shorts") and not getattr(args, "long", 0)
         want = (getattr(args, "long", 0) or 0) + (getattr(args, "shorts", 0) or 0) if note.endswith("Shorts") else 1
         room = upload_room(reserve=1 if plain_short else 0)
-        if room < max(1, want) and not plain_short and probe_due():
+        # every slot may probe (until YouTube refuses one today): after the channel's verification the real limit is
+        # likely higher, and each accepted upload above the cap raises it - so all slots run again as soon as it is
+        if room < max(1, want) and probe_due():
             log("upload limit probe: trying one upload above the current cap (YouTube may have raised the limit)")
             args.long, args.shorts = (0, 1) if note.endswith("Shorts") else (getattr(args, "long", 0), getattr(args, "shorts", 0))
             room = want = 1
