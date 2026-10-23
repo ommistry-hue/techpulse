@@ -623,12 +623,15 @@ def choose_format(names, taken=()):
         rows = [r for r in scored_videos(LANG, days=21) if r["kind"] == "short" and r.get("format")] if sb_on() else []
     except Exception:
         rows = []
-    vals = [math.log1p(r["vph"]) for r in rows]
+    # views/hour, weighted by how much of the Short people watch when YouTube Analytics has it (~2 days later):
+    # retention is what the Shorts feed rewards, so a format that holds viewers counts for more
+    value = lambda r: math.log1p(r["vph"] * (r.get("avg_view_pct") or 40) / 40)  # 40% = our typical Short
+    vals = [value(r) for r in rows]
     mean = sum(vals) / len(vals) if vals else 1.0
     sd = (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5 if len(vals) > 1 else 0.6
     draw = {}
     for f in pool:
-        own = [math.log1p(r["vph"]) for r in rows if r["format"] == f]
+        own = [value(r) for r in rows if r["format"] == f]
         k = 2  # prior strength: a new format counts as 2 average videos
         draw[f] = random.gauss((sum(own) + k * mean) / (len(own) + k), max(sd, 0.3) / math.sqrt(len(own) + k))
     return max(draw, key=draw.get)
@@ -667,7 +670,7 @@ def write_short(pick, ctx, kw, variant="core", fmt_name=None, _retry=True, wait=
                  "\"wait for the last one\", \"wait till you see the price\"; in Hindi: \"आख़िर तक देखिए\"). Keep the single "
                  "most surprising SOURCED fact for the end and really deliver it - never tease something the video does not "
                  "show. ORDER: hook + tease, facts and take, the subscribe line, THEN the surprise stated clearly with "
-                 "its number/fact, THEN the loop half-sentence.") if wait else ""
+                 "its number/fact, THEN the short loop lead-in line.") if wait else ""
     if LANG == "hi":  # Hindi words are longer when spoken: same seconds need ~25% fewer words
         lo, hi = round(lo * 0.75), round(hi * 0.75)
     fmt_name = fmt_name or random.choice(list(SHORT_FORMATS))
@@ -683,8 +686,10 @@ Shorts rules (viewers decide in the first second whether to swipe away):
 - One fast idea per sentence; build to the most surprising fact; include one clear take or verdict.
 - Right after the most surprising fact (about 60% in), say exactly this line: "{L()['follow_line']}"
 - No spoken comment question (it goes in the pinned comment).
-- The LAST sentence is a half-sentence that flows straight back into the first sentence, so the Short loops
-  seamlessly (example: last "...and that is exactly why" -> first "Apple just killed the iPhone mini.").
+- The LAST sentence is a COMPLETE short lead-in line (3-6 words, ending with ":" or "-") that sets up the first
+  sentence, so the Short loops seamlessly but never sounds cut off for viewers who stop there (example: last
+  "Here's the deal:" -> first "Apple just killed the iPhone mini."; Hindi: "और ये है असली बात:"). Never end on
+  a dangling word like "because", "why", "क्योंकि" or "...".
 {RULES}
 {retention_block()}
 {learned_block()}
@@ -719,9 +724,31 @@ Return JSON only:
     if len(meta["script"].split()) < lo * 0.75:  # only when clearly too short: padding hurts Shorts
         log(f"[short] '{meta['topic']}' too short, expanding")
         meta["script"] = expand(meta["script"], lo, hi)
+    meta["script"] = fix_dangling_end(meta["script"])
     meta["format"] = fmt_name
     meta["wait_for_it"] = wait
     return meta
+
+
+LOOP_LINE = {"en": "Here's the deal:", "hi": "और ये है असली बात:"}
+DANGLING = re.compile(r"(\.\.\.|…|\b(because|why|that is why|that's why|and|so)|क्योंकि|इसलिए|और|तो)[\s.…]*$", re.I)
+
+
+def fix_dangling_end(script):
+    """The loop ending must never sound cut off ("...because", "क्योंकि..."): swap a dangling last fragment for a
+    complete lead-in line that still flows back into the first sentence."""
+    if not DANGLING.search(script.strip()):
+        return script
+    parts = re.split(r"(?<=[.!?।])\s+", script.strip())
+    keep = parts[:-1] if len(parts) > 1 else parts
+    last = parts[-1] if len(parts) > 1 else ""
+    # the fragment may carry a real clause before the dangling word: keep it as a sentence
+    clause = last
+    while DANGLING.search(clause):  # "...assistant and that is why" -> strip "that is why", then "and"
+        clause = DANGLING.sub("", clause).strip(" ,-")
+    if len(clause.split()) >= 4:
+        keep.append(clause + ("।" if LANG == "hi" else "."))
+    return " ".join(keep + [LOOP_LINE[LANG]])
 
 
 def clean_script(value):
@@ -822,7 +849,36 @@ SCRIPT_RUBRIC = """Score this YouTube Short script 0-100 for keeping viewers wat
 - specifics (15): concrete names, numbers, prices, dates from the facts
 - payoff (15): the most surprising fact is delivered clearly, plus a verdict
 - why it matters (10): one line on what it means for the viewer (their phone, money, job, daily life)
-- loop (5): the last half-sentence flows back into the first sentence"""
+- loop (5): the last line is a complete short lead-in (e.g. "Here's the deal:") that flows back into the first
+  sentence; a dangling ending ("because...", "क्योंकि...") scores 0 here"""
+
+
+def title_doctor(meta):
+    """Shorts titles get the same treatment as scripts: score the current title and 3 alternatives on what makes people
+    stop scrolling, keep the best one that is honest to the script and fits the feed (max 40 characters)."""
+    try:
+        res = llm_json(f"""You choose the title for a YouTube Short ({L()['name']}).
+SCRIPT: {meta['script']}
+CURRENT TITLE: {meta['title']}
+{lang_rules() if LANG == 'hi' else ''}
+Write 3 alternative titles, then score the current title and each alternative 0-100:
+- names the product/brand first (the search keyword) (30)
+- clear stakes or curiosity: price, hack, ban, leak, vs, 'free', a surprising number (30)
+- honest: every word supported by the script, no claim the script does not make (a dishonest title scores 0) (25)
+- short and readable: max 40 characters, plain words, at most one emoji at the end (15)
+Return JSON only: {{"titles": [{{"title": "...", "score": 0}}]}} with the CURRENT title first.""", required=("titles",))
+        options = [t for t in res.get("titles") or [] if isinstance(t, dict) and isinstance(t.get("title"), str)
+                   and 8 <= len(t["title"].strip()) <= 42]
+        if options:
+            score = lambda t: int(t.get("score") or 0)
+            best = max(options, key=score)
+            current = next((score(t) for t in options if t["title"].strip() == meta["title"].strip()), -1)
+            if best["title"].strip() != meta["title"].strip() and score(best) > current:
+                log(f"[short] title '{meta['title']}' -> '{best['title'].strip()}' (score {current} -> {score(best)})")
+                meta["title"] = best["title"].strip()
+    except Exception as e:
+        log(f"[short] title doctor skipped ({str(e)[:120]})")
+    return meta
 
 
 def script_doctor(meta):
@@ -884,7 +940,7 @@ def write_checked(write, ctx, kind):
     listed; if it still fails it is dropped (never uploaded), so no video ever waits private for a human review.
     `write(note)` returns a script; `note` is extra instruction text for the rewrite. Shorts get the retention pass
     (script_doctor) before the fact-check, so the fact-check always sees the final words."""
-    polish = script_doctor if kind == "short" else (lambda m: m)
+    polish = (lambda m: title_doctor(script_doctor(m))) if kind == "short" else (lambda m: m)
     meta = fact_check(polish(write("")), ctx, kind)
     if not meta.get("hold"):
         return meta
@@ -1019,6 +1075,20 @@ def split_sentences(text):
     return [s for s in re.split(r"(?<=[.!?।])\s+", text.strip()) if s.strip()]
 
 
+# Per-video look and delivery (see pick_style): varied so the channel never looks like one repeated template
+# (YouTube's July 2025 "inauthentic / mass-produced content" rule), while the host and channel name stay the brand.
+STYLES = {"accent": ["#2be4ff", "#a3ff3c", "#ff4fa3", "#ff8a1f"],  # cyan, lime, pink, orange
+          "captions": ["mid", "low"],
+          "pace": [-4, 0, 4]}  # % on top of the base voice speed
+PACE_SHIFT = 0  # set per video by make_video
+
+
+def pick_style(meta):
+    """A look for this video: accent colour, caption height and voice pace, spread so back-to-back videos differ."""
+    seed = sum(map(ord, meta.get("topic", ""))) + datetime.datetime.now().hour
+    return {k: v[(seed // (i + 1)) % len(v)] for i, (k, v) in enumerate(STYLES.items())}
+
+
 def tts(text, mp3, kind, voice=None, emotion="neutral"):
     for attempt in range(4):
         try:
@@ -1026,7 +1096,7 @@ def tts(text, mp3, kind, voice=None, emotion="neutral"):
             rate = os.environ.get("TTS_RATE") or (("+8%" if LANG == "hi" else "+12%") if kind == "short"
                                                   else ("+0%" if LANG == "hi" else "+6%"))
             dr, dp, dv = EMOTION_PROSODY.get(emotion, (0, 0, 0))
-            rate = f"{int(rate.strip('%')) + dr:+d}%"
+            rate = f"{int(rate.strip('%')) + dr + PACE_SHIFT:+d}%"
             return asyncio.run(_tts(text, voice or VOICES["male"], rate, mp3, f"{dp:+d}Hz", f"{dv:+d}%"))
         except Exception as e:
             if attempt == 3:
@@ -1636,7 +1706,7 @@ BRANDS = {"apple", "iphone", "ipad", "mac", "macbook", "airpods", "samsung", "ga
 
 
 def render_motion(work, kind, words, duration, clips, title, sections, host=None, mouth=(), facts=(), turns=(),
-                  cards=(), versus=None, countdown=(), wait=None, emotions=()):
+                  cards=(), versus=None, countdown=(), wait=None, emotions=(), style=None):
     """Animated style (Remotion): presenter character, kinetic captions, headline/fact cards.
     Assets are served from the work folder."""
     fmt = FORMATS[kind]
@@ -1669,7 +1739,8 @@ def render_motion(work, kind, words, duration, clips, title, sections, host=None
              "channel": os.environ.get("CHANNEL_NAME", "TechPulse").upper(),
              "character": (host or {}).get("character", "max"), "mouth": list(mouth), "ui": L()["ui"], "lang": LANG,
              "music": music, "turns": list(turns), "cards": list(cards), "versus": versus, "countdown": list(countdown), "wait": wait, "emotions": list(emotions),
-             "facts": [{"t": round(t, 2), "text": x} for t, x in facts], "highlights": caption_highlights(" ".join([title, *(w for *_, w in words)]))}
+             "facts": [{"t": round(t, 2), "text": x} for t, x in facts], "style": style or {},
+             "highlights": caption_highlights(" ".join([title, *(w for *_, w in words)]))}
     (work / "props.json").write_text(json.dumps(props, ensure_ascii=False), encoding="utf-8")
     npx = shutil.which("npx") or "npx"
     subprocess.run([npx, "remotion", "render", "src/index.jsx", "Long" if kind == "long" else "Short",
@@ -1702,7 +1773,11 @@ def fact_times(meta, kind, words, duration, chapter_list):
 
 
 def make_video(work, kind, meta, host=None):
+    global PACE_SHIFT
     fmt = FORMATS[kind]
+    meta["style"] = meta.get("style") or pick_style(meta)
+    PACE_SHIFT = meta["style"]["pace"] if kind == "short" else 0
+    log(f"[{kind}] style: {meta['style']}")
     work.mkdir(parents=True, exist_ok=True)
     host = host or pick_voice(0)
     turns, emotions = [], []
@@ -1738,7 +1813,8 @@ def make_video(work, kind, meta, host=None):
             video = render_motion(work, kind, words, duration, clips, title, section_list, host, mouth,
                                   fact_times(meta, kind, words, duration, section_list), turns,
                                   card_times(meta, kind, duration, section_list), versus, countdown,
-                                  L()["wait"] if kind == "short" and meta.get("wait_for_it") else None, emotions)
+                                  L()["wait"] if kind == "short" and meta.get("wait_for_it") else None, emotions,
+                                  meta["style"])
         except Exception as e:  # never lose a day's video: fall back to the classic slideshow
             log(f"[{kind}] animated render failed ({str(e)[:150]}), using classic style")
     if video is None:

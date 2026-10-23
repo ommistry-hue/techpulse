@@ -7,8 +7,12 @@ import { useAudioData, visualizeAudio } from "@remotion/media-utils";
 import { Presenter } from "./Presenter";
 
 // Brand colors from the TechPulse logo: neon cyan -> blue -> purple on deep navy.
-const Y = "#2be4ff", INK = "#070d1a", WHITE = "#ffffff", CYAN = "#2be4ff", BLUE = "#3b82f6", PURPLE = "#a855f7";
-const NEON = `linear-gradient(90deg, ${CYAN}, ${BLUE} 55%, ${PURPLE})`;
+const INK = "#070d1a", WHITE = "#ffffff", BLUE = "#3b82f6", PURPLE = "#a855f7";
+// Accent colour varies per video (style.accent from autotube.py) so the channel doesn't look like one template.
+// Set once at the top of NewsVideo before any child renders; every render of a composition uses the same props.
+let Y = "#2be4ff", CYAN = Y, NEON = "";
+const setAccent = (c = "#2be4ff") => { Y = CYAN = c; NEON = `linear-gradient(90deg, ${c}, ${BLUE} 55%, ${PURPLE})`; };
+setAccent();
 const FONT = "Anton, Mukta, Impact, sans-serif";  // Mukta draws Devanagari (Hindi)
 const clamp = { extrapolateLeft: "clamp", extrapolateRight: "clamp" };
 
@@ -198,7 +202,7 @@ const HookTitle = ({ title, L, duo }) => {
 const GOLD = "#ffd23f";
 const isKey = (w, hl) => /[0-9$₹€£%]/.test(w) || hl.has(w.toLowerCase().replace(/[^\p{L}\p{N}+]/gu, ""));
 
-const Captions = ({ words, L, duo, lift = false, highlights = [] }) => {
+const Captions = ({ words, L, duo, lift = false, highlights = [], low = false }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const t = frame / fps;
@@ -211,7 +215,7 @@ const Captions = ({ words, L, duo, lift = false, highlights = [] }) => {
   if (!group.length || t < group[0][0] - 0.05) return null;
   return (
     <AbsoluteFill style={{ justifyContent: L ? "flex-end" : "center", alignItems: "center",
-      paddingBottom: L ? 70 : 0, paddingTop: L ? 0 : lift ? 880 : 560, paddingLeft: L ? (duo ? 430 : 0) : 40, paddingRight: L ? (duo ? 430 : 560) : 40 }}>
+      paddingBottom: L ? 70 : 0, paddingTop: L ? 0 : lift ? 880 : low ? 760 : 560, paddingLeft: L ? (duo ? 430 : 0) : 40, paddingRight: L ? (duo ? 430 : 560) : 40 }}>
       <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: L ? "0 26px" : "0 40px",
         background: L ? "rgba(11,18,32,.72)" : "transparent", borderRadius: 18, padding: L ? "10px 30px" : 0, maxWidth: L ? 1200 : 1000 }}>
         {group.map(([t0, , w], i) => {
@@ -501,7 +505,8 @@ const speakerAt = (turns, t) => {
 };
 
 export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mouth = [], title, channel, music = null,
-  turns = [], cards = [], versus = null, countdown = [], wait = null, emotions = [], highlights = [], character = "max", ui = { news: "TECH NEWS", fact: "FACT", subscribe: "SUBSCRIBE", like: "LIKE", comment: "COMMENT", share: "SHARE" }, durationInFrames }) => {
+  turns = [], cards = [], versus = null, countdown = [], wait = null, emotions = [], highlights = [], style = {}, character = "max", ui = { news: "TECH NEWS", fact: "FACT", subscribe: "SUBSCRIBE", like: "LIKE", comment: "COMMENT", share: "SHARE" }, durationInFrames }) => {
+  setAccent(style.accent);
   useFont();
   const { fps } = useVideoConfig();
   const frame = useCurrentFrame();
@@ -586,7 +591,8 @@ export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mo
           <Audio src={staticFile(i === countdown.length - 1 ? "ding.wav" : "hit.wav")} volume={0.45} />
         </Sequence>
       ))}
-      {(!L || frame >= fps * 3.4) && <Captions words={words} L={L} duo={duo} lift={!!versus} highlights={highlights} />}
+      {(!L || frame >= fps * 3.4) && <Captions words={words} L={L} duo={duo} lift={!!versus} highlights={highlights}
+        low={style.captions === "low"} />}
       {versus && versus.winner && versus.winAt != null && (
         <Sequence from={Math.round(versus.winAt * fps)} durationInFrames={Math.round(fps * 1.2)} layout="none">
           <Audio src={staticFile("ding.wav")} volume={0.45} />
