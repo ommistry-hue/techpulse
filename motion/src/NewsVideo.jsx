@@ -194,10 +194,15 @@ const HookTitle = ({ title, L, duo }) => {
   );
 };
 
-const Captions = ({ words, L, duo, lift = false }) => {
+// Names and numbers carry a news story: brand words from the title and any number/price/percent are drawn in gold.
+const GOLD = "#ffd23f";
+const isKey = (w, hl) => /[0-9$₹€£%]/.test(w) || hl.has(w.toLowerCase().replace(/[^\p{L}\p{N}+]/gu, ""));
+
+const Captions = ({ words, L, duo, lift = false, highlights = [] }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const t = frame / fps;
+  const hl = new Set(highlights);
   const n = L ? 6 : 3;
   let spoken = 0;
   for (let i = 0; i < words.length && words[i][0] <= t; i++) spoken = i;
@@ -215,7 +220,7 @@ const Captions = ({ words, L, duo, lift = false }) => {
           const pop = isCurrent ? spring({ frame: frame - Math.round(t0 * fps), fps, config: { damping: 9, stiffness: 220 } }) : 1;
           return (
             <span key={i} style={{ fontFamily: FONT, fontSize: L ? 76 : 124, lineHeight: 1.15, textTransform: "uppercase",
-              color: isCurrent ? Y : WHITE, opacity: active ? 1 : 0.55,
+              color: isKey(w, hl) ? GOLD : isCurrent ? Y : WHITE, opacity: active ? 1 : 0.55,
               transform: `scale(${isCurrent ? 0.9 + pop * 0.18 : 1})`, display: "inline-block",
               WebkitTextStroke: L ? "0" : "10px #000", paintOrder: "stroke fill", textShadow: "0 6px 0 rgba(0,0,0,.55)" }}>{w}</span>
           );
@@ -496,7 +501,7 @@ const speakerAt = (turns, t) => {
 };
 
 export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mouth = [], title, channel, music = null,
-  turns = [], cards = [], versus = null, countdown = [], wait = null, emotions = [], character = "max", ui = { news: "TECH NEWS", fact: "FACT", subscribe: "SUBSCRIBE", like: "LIKE", comment: "COMMENT", share: "SHARE" }, durationInFrames }) => {
+  turns = [], cards = [], versus = null, countdown = [], wait = null, emotions = [], highlights = [], character = "max", ui = { news: "TECH NEWS", fact: "FACT", subscribe: "SUBSCRIBE", like: "LIKE", comment: "COMMENT", share: "SHARE" }, durationInFrames }) => {
   useFont();
   const { fps } = useVideoConfig();
   const frame = useCurrentFrame();
@@ -581,7 +586,7 @@ export const NewsVideo = ({ kind, audio, words, scenes, sections, facts = [], mo
           <Audio src={staticFile(i === countdown.length - 1 ? "ding.wav" : "hit.wav")} volume={0.45} />
         </Sequence>
       ))}
-      {(!L || frame >= fps * 3.4) && <Captions words={words} L={L} duo={duo} lift={!!versus} />}
+      {(!L || frame >= fps * 3.4) && <Captions words={words} L={L} duo={duo} lift={!!versus} highlights={highlights} />}
       {versus && versus.winner && versus.winAt != null && (
         <Sequence from={Math.round(versus.winAt * fps)} durationInFrames={Math.round(fps * 1.2)} layout="none">
           <Audio src={staticFile("ding.wav")} volume={0.45} />

@@ -206,3 +206,6 @@ create table if not exists public.slot_log (
 alter table public.slot_log enable row level security;
 drop policy if exists "admins read slot log" on public.slot_log;
 create policy "admins read slot log" on public.slot_log for select to authenticated using (public.is_app_admin());
+
+-- Retention score (0-100) the script doctor gave each Short, to check later whether it predicts views
+alter table public.insights add column if not exists script_score int;

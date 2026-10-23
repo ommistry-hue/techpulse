@@ -4,6 +4,7 @@ import asyncio
 import datetime
 import html
 import json
+import math
 import os
 import random
 import re
@@ -314,7 +315,10 @@ def lang_rules():
                 f" headings in Hindi. {L()['style']}\n"
                 "Title: Hinglish - start with the English search keyword Indians actually type (e.g. 'iPhone 17 Launch:'),"
                 " then a short Hindi hook in Devanagari. thumbnail_text and hook_text: short, English letters or Hinglish.\n"
-                "Tags: mix English search phrases, Hinglish phrases and Hindi words (e.g. 'tech news hindi', 'AI news in hindi').")
+                "Tags: mix English search phrases, Hinglish phrases and Hindi words (e.g. 'tech news hindi', 'AI news in hindi').\n"
+                "INDIA ANGLE: when the sources give it, lead with what it means in India - the India price in rupees (₹),"
+                " India launch date, Jio/Airtel, UPI, Flipkart/Amazon India. Never convert or invent a rupee price the"
+                " sources do not state.")
     return f"LANGUAGE: {L()['style']}"
 
 
@@ -336,6 +340,20 @@ DAY_FOCUS = {
 }
 
 
+# What our own winners have in common (Oct 2026: "Switch 2 Hacked!", Xbox price, "DeepInfer" vs ~40-130 views for
+# abstract stories) plus Shorts research: concrete brand + conflict/money beats abstract AI-research news.
+TOPIC_SCORE = ("TOPIC SCORE - rate each candidate story and pick the highest:\n"
+               "+3 a famous named product/brand people own or want (iPhone, Galaxy, Pixel, PlayStation, Xbox, Switch,"
+               " ChatGPT, Gemini, WhatsApp, Instagram, Windows, Tesla)\n"
+               "+2 money: a price, price hike, fee, 'free', deal or cost\n"
+               "+2 conflict or stakes: hacked, leaked, banned, killed, broken, lawsuit, outage, 'vs'\n"
+               "+2 for Hindi: an India angle in the sources (India price in rupees, India launch date, Jio/Airtel, UPI,"
+               " Flipkart/Amazon India)\n"
+               "+1 something the viewer can do or check today\n"
+               "-3 abstract research, academic papers, enterprise/B2B tools, funding rounds or company reorganisations"
+               " with no product people use")
+
+
 def topic_rules(niche, used):
     audience = ("Audience: Indian viewers. Prefer stories Indians care about (India launches, prices in India, Jio/Airtel,"
                 " Indian startups, global big-tech news that affects India)." if LANG == "hi" else "Audience: US/global English viewers.")
@@ -343,6 +361,7 @@ def topic_rules(niche, used):
     return (f"Channel: {CHANNEL()}, niche: {niche or 'tech'}. {audience}\n"
             f"Today's preferred theme when stories are otherwise equal: {focus}.\n"
             f"{SAFE_TOPICS}\n"
+            f"{TOPIC_SCORE}\n"
             f"{goal_focus()}\n"
             f"{learned_block()}\n"
             f"Pick stories that fit the niche, are fresh today, and have the biggest audience (high searches,"
@@ -583,22 +602,41 @@ FAST_FORMATS = {"versus_test", "hidden_trick"}  # 16-22 s; the rest 25-30 s
 NEWS_FORMATS = ["hot_take", "versus", "three_things", "myth_fact", "number_shock", "what_it_means"]
 
 
-def shorts_made_today(formats):
-    """How many Shorts in this language with one of these formats were made today (drives format rotation)."""
+def formats_today():
+    """Formats of this language's Shorts made today (UTC)."""
     if not sb_on():
-        return 0
+        return []
     try:
-        rows = sb_rest("GET", f"insights?select=format&kind=eq.short&lang=eq.{LANG}&created_at=gte."
-                              f"{datetime.datetime.now(datetime.timezone.utc):%Y-%m-%d}T00:00:00Z")
-        return sum(1 for r in rows if r.get("format") in formats)
+        return [r.get("format") for r in sb_rest("GET", f"insights?select=format&kind=eq.short&lang=eq.{LANG}"
+                f"&created_at=gte.{datetime.datetime.now(datetime.timezone.utc):%Y-%m-%d}T00:00:00Z")]
     except Exception:
-        return 0
+        return []
 
 
-def pick_short_format(i):
-    """Each news Short of the day gets the next format, so no two in a row look the same."""
-    names = NEWS_FORMATS
-    return names[(datetime.date.today().toordinal() * 2 + shorts_made_today(names) + i) % len(names)]
+def choose_format(names, taken=()):
+    """Thompson sampling: each format's score is drawn from what its Shorts earned (log views/hour, last 21 days),
+    pulled towards the channel average while it has few videos. Winners get picked more often, the rest keep being
+    tested. A format already used twice today is skipped, so the channel never looks like one repeated template."""
+    today = formats_today() + list(taken)
+    pool = [f for f in names if today.count(f) < 2] or list(names)
+    try:
+        rows = [r for r in scored_videos(LANG, days=21) if r["kind"] == "short" and r.get("format")] if sb_on() else []
+    except Exception:
+        rows = []
+    vals = [math.log1p(r["vph"]) for r in rows]
+    mean = sum(vals) / len(vals) if vals else 1.0
+    sd = (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5 if len(vals) > 1 else 0.6
+    draw = {}
+    for f in pool:
+        own = [math.log1p(r["vph"]) for r in rows if r["format"] == f]
+        k = 2  # prior strength: a new format counts as 2 average videos
+        draw[f] = random.gauss((sum(own) + k * mean) / (len(own) + k), max(sd, 0.3) / math.sqrt(len(own) + k))
+    return max(draw, key=draw.get)
+
+
+def pick_short_format(i, taken=()):
+    """Format for a news Short (see choose_format)."""
+    return choose_format(NEWS_FORMATS, taken)
 
 
 def pick_short_variant(i):
@@ -777,19 +815,85 @@ Return JSON only: {{"verdict": "...", "safe": true, "safety_reason": "", "issues
     return meta
 
 
+SCRIPT_RUBRIC = """Score this YouTube Short script 0-100 for keeping viewers watching:
+- hook (25): first sentence max 10 words, names the product/company and the stakes, no warm-up
+- curiosity (15): an open question or tension that makes people wait for the answer
+- pace (15): one idea per sentence, no filler words, no repetition
+- specifics (15): concrete names, numbers, prices, dates from the facts
+- payoff (15): the most surprising fact is delivered clearly, plus a verdict
+- why it matters (10): one line on what it means for the viewer (their phone, money, job, daily life)
+- loop (5): the last half-sentence flows back into the first sentence"""
+
+
+def script_doctor(meta):
+    """Retention pass for Shorts: grade the script, rewrite it to fix its weakest points, and keep the rewrite only if
+    it grades higher. Same facts only; the fact-check still runs afterwards. Never loses the original script."""
+    original = meta["script"]
+    try:
+        res = llm_json(f"""{SCRIPT_RUBRIC}
+
+SCRIPT ({L()['name']}):
+{original}
+
+Then write an improved version that fixes the 2-3 weakest points by reordering, cutting filler and sharpening
+wording ONLY. Strict rules for the rewrite:
+- Every fact must keep its exact meaning: same who, what, which product/version, when, and the same numbers. Never
+  move a detail from one fact to another (e.g. "hackers attacked OLD versions" must not become "...the NEW update").
+- Never add a claim, name, number or question whose answer the script does not give.
+- Same language and writing as the original, about the same length (within 10%).
+- Keep this exact sentence unchanged: "{L()['follow_line']}". Keep the loop ending.
+Return JSON only: {{"score": 0, "weakest": ["..."], "improved_script": "..."}}""", required=("score", "improved_script"))
+        before = int(res.get("score") or 0)
+        better = clean_script(res.get("improved_script") or "").get("script") or ""
+        words, new_words = len(original.split()), len(better.split())
+        if (not better or L()["follow_line"] not in better or not same_writing(original, better)
+                or not 0.8 * words <= new_words <= 1.2 * words):
+            meta["script_score"] = before
+            log(f"[short] script score {before}; rewrite not usable, keeping the original")
+            return meta
+        check = llm_json(f"""{SCRIPT_RUBRIC}
+
+ORIGINAL SCRIPT:
+{original}
+
+REWRITE ({L()['name']}):
+{better}
+
+1) Score the REWRITE with the rubric. 2) Strictly compare meanings: does the rewrite change ANY fact of the original
+(who, what, which product or version, when, any number) or add any claim the original does not make?
+Return JSON only: {{"score": 0, "same_facts": true, "changed": "what changed, or empty"}}""",
+                         required=("score", "same_facts"))
+        after = int(check.get("score") or 0)
+        if check.get("same_facts") is not True:
+            meta["script_score"] = before
+            log(f"[short] script score {before}; rewrite changed a fact ({str(check.get('changed'))[:100]}), "
+                "keeping the original")
+            return meta
+        if after > before:
+            meta["script"] = better
+        meta["script_score"] = max(before, after)
+        log(f"[short] script score {before} -> {after}: {'rewrite kept' if after > before else 'original kept'}"
+            f" (weakest: {'; '.join(str(w) for w in (res.get('weakest') or [])[:3])[:160]})")
+    except Exception as e:  # the doctor is a bonus: never lose a video over it
+        log(f"[short] script doctor skipped ({str(e)[:120]})")
+    return meta
+
+
 def write_checked(write, ctx, kind):
     """Fully automatic fact-checking: a script that fails the check is rewritten once from scratch with the problems
     listed; if it still fails it is dropped (never uploaded), so no video ever waits private for a human review.
-    `write(note)` returns a script; `note` is extra instruction text for the rewrite."""
-    meta = fact_check(write(""), ctx, kind)
+    `write(note)` returns a script; `note` is extra instruction text for the rewrite. Shorts get the retention pass
+    (script_doctor) before the fact-check, so the fact-check always sees the final words."""
+    polish = script_doctor if kind == "short" else (lambda m: m)
+    meta = fact_check(polish(write("")), ctx, kind)
     if not meta.get("hold"):
         return meta
     issues = meta["fact_check"]["issues"]
     if any(str(i).startswith("SAFETY") for i in issues):
         raise RuntimeError(f"dropped: unsafe topic ({str(issues[0])[:120]})")
     log(f"[{kind}] fact-check failed, rewriting from scratch")
-    meta = fact_check(write(". REWRITE - an earlier draft had these problems, avoid them and state only facts the "
-                            "sources support: " + "; ".join(str(i) for i in issues)[:800]), ctx, kind)
+    meta = fact_check(polish(write(". REWRITE - an earlier draft had these problems, avoid them and state only facts "
+                                   "the sources support: " + "; ".join(str(i) for i in issues)[:800])), ctx, kind)
     if meta.get("hold"):
         raise RuntimeError("dropped: script failed the fact-check twice")
     return meta
@@ -836,6 +940,7 @@ def plan_videos(trends, niche, used, n_long, n_shorts, weekly=False):
     if longs and shorts:  # funnel: the first Short teases the long video's story and sends viewers to it
         shorts[0] = {**longs[0], "teaser": True, "angle": (longs[0].get("angle", "") + ". TEASER: give the single most "
                      "surprising fact; around the middle say the full story is on our channel today. Keep the loop ending.")}
+    chosen = []  # formats picked in this run (choose_format avoids a third use of one format today)
     for kind, picks, writer in (("long", longs, write_long), ("short", shorts, write_short)):
         for i, p in enumerate(picks):
             try:
@@ -844,7 +949,8 @@ def plan_videos(trends, niche, used, n_long, n_shorts, weekly=False):
                 log(f"[{kind}] '{p['topic']}': {len(ctx)} source headlines, {len(kw)} search suggestions")
                 if kind == "short":
                     variant = pick_short_variant(i)
-                    fmt = pick_short_format(i)
+                    fmt = pick_short_format(i, chosen)
+                    chosen.append(fmt)
                     meta = write_checked(lambda note: writer({**p, "angle": p.get("angle", "") + note}, ctx, kw,
                                                              variant, fmt), ctx, kind)
                     meta["variant"] = variant
@@ -1353,6 +1459,7 @@ def build_video(work, clips, duration, fmt):
         "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", "final.mp4"], work)
     for p in work.glob("part*.mp4"):
         p.unlink()
+    normalize_loudness(work)
     return work / "final.mp4"
 
 
@@ -1511,6 +1618,23 @@ def countdown_times(meta, words, duration):
     return [{"n": n, "t": round(hook + k * step, 2)} for k, n in enumerate((3, 2, 1))]
 
 
+def caption_highlights(title):
+    """Caption words to colour gold: the product/brand words of the title (numbers and prices are coloured in the
+    renderer itself). Keeps the eye on the names and numbers that carry the story."""
+    words = re.findall(r"[A-Za-z][A-Za-z0-9+]+", title or "")
+    return sorted({w.lower() for w in words if w.lower() in BRANDS  # Xbox, Switch, Oppo
+                   or (len(w) > 2 and any(c.isupper() for c in w[1:]))  # iPhone, ChatGPT (not "AI": in every video)
+                   or any(c.isdigit() for c in w)})  # X10
+
+
+BRANDS = {"apple", "iphone", "ipad", "mac", "macbook", "airpods", "samsung", "galaxy", "google", "pixel", "android",
+          "gemini", "chatgpt", "openai", "microsoft", "windows", "xbox", "sony", "playstation", "nintendo", "switch",
+          "meta", "instagram", "whatsapp", "facebook", "youtube", "tesla", "nvidia", "amd", "intel", "qualcomm",
+          "snapdragon", "oneplus", "xiaomi", "redmi", "oppo", "vivo", "realme", "motorola", "moto", "nothing", "jio",
+          "airtel", "upi", "amazon", "flipkart", "netflix", "spotify", "chrome", "deepseek", "claude", "anthropic",
+          "grok", "kindle", "steam", "gta"}
+
+
 def render_motion(work, kind, words, duration, clips, title, sections, host=None, mouth=(), facts=(), turns=(),
                   cards=(), versus=None, countdown=(), wait=None, emotions=()):
     """Animated style (Remotion): presenter character, kinetic captions, headline/fact cards.
@@ -1545,13 +1669,26 @@ def render_motion(work, kind, words, duration, clips, title, sections, host=None
              "channel": os.environ.get("CHANNEL_NAME", "TechPulse").upper(),
              "character": (host or {}).get("character", "max"), "mouth": list(mouth), "ui": L()["ui"], "lang": LANG,
              "music": music, "turns": list(turns), "cards": list(cards), "versus": versus, "countdown": list(countdown), "wait": wait, "emotions": list(emotions),
-             "facts": [{"t": round(t, 2), "text": x} for t, x in facts]}
+             "facts": [{"t": round(t, 2), "text": x} for t, x in facts], "highlights": caption_highlights(" ".join([title, *(w for *_, w in words)]))}
     (work / "props.json").write_text(json.dumps(props, ensure_ascii=False), encoding="utf-8")
     npx = shutil.which("npx") or "npx"
     subprocess.run([npx, "remotion", "render", "src/index.jsx", "Long" if kind == "long" else "Short",
                     str(work / "final.mp4"), f"--props={work / 'props.json'}", f"--public-dir={work}",
                     "--log=error", "--crf=20", "--concurrency=100%"], cwd=ROOT / "motion", check=True)  # all cores
+    normalize_loudness(work)
     return work / "final.mp4"
+
+
+def normalize_loudness(work):
+    """Every video at YouTube's playback loudness (-14 LUFS, peaks under -1.5 dB), so no upload sounds quieter or
+    harsher than the one before it in the feed. Video stream copied untouched; on any error the render is kept."""
+    try:
+        ff(["-i", "final.mp4", "-c:v", "copy", "-af", "loudnorm=I=-14:TP=-1.5:LRA=11", "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart", "final_ln.mp4"], work)
+        (work / "final_ln.mp4").replace(work / "final.mp4")
+    except Exception as e:
+        log(f"loudness normalisation skipped ({str(e)[:100]})")
+        (work / "final_ln.mp4").unlink(missing_ok=True)
 
 
 def fact_times(meta, kind, words, duration, chapter_list):
@@ -2115,7 +2252,8 @@ def record(work, kind, meta, desc, duration, vid, thumb):
     if vid:
         sb_rest("POST", "insights", prefer="return=representation,resolution=merge-duplicates", json={"youtube_id": vid, "lang": LANG, "kind": kind, "topic": meta["topic"], "title": meta["title"],
                       "variant": meta.get("variant") or ("weekly" if meta.get("weekly") else None),
-                      "format": meta.get("format"), "followup_of": meta.get("followup_of")})
+                      "format": meta.get("format"), "followup_of": meta.get("followup_of"),
+                      "script_score": meta.get("script_score")})
     try:  # app preview files are a convenience: a failure here must not lose the record above
         paths = {"preview_path": sb_upload(make_preview(work, kind), f"{prefix}/preview.mp4", "video/mp4")}
         if thumb:
@@ -2319,7 +2457,7 @@ def plan_viral(trends, niche, used):
 
 def _plan_viral(trends, niche, used):
     names = VIRAL_FORMATS[LANG]
-    fmt_name = names[(datetime.date.today().toordinal() * 2 + shorts_made_today(names)) % len(names)]
+    fmt_name = choose_format(names)
     rejected = []
     for attempt in range(4):
         shown = trends[:60] if not rejected else random.sample(trends[:80], min(60, len(trends[:80])))
@@ -2333,6 +2471,7 @@ news articles cover, so the facts can be sourced. Prefer famous brands and thing
 Trending now (for inspiration):
 {trends_text(shown)}
 Already covered recently (do not repeat): {json.dumps(used[-40:], ensure_ascii=False)}{avoid}
+{TOPIC_SCORE}
 {SAFE_TOPICS}
 Return JSON only: {{"topic": "short name", "search_query": "3-6 word news search query", "angle": "the hook"}}""",
                         required=("topic", "search_query"))
