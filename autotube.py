@@ -1657,11 +1657,13 @@ def youtube_client():
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
-            except Exception as e:  # revoked/expired login: tell the phone app, then fail as before
-                if "invalid_grant" in str(e) and sb_on():
+            except Exception as e:  # revoked/expired login: tell the phone app, then use the other project's login
+                if "invalid_grant" not in str(e):
+                    raise
+                if sb_on():
                     sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates", json={
                         "key": f"login_expired_{PROJECT}", "value": {"at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "lang": LANG}})
-                raise
+                return failover_client(e)
             if sb_on() and get_setting(f"login_expired_{PROJECT}", None):
                 sb_rest("DELETE", f"settings?key=eq.login_expired_{PROJECT}")
         else:
@@ -1671,6 +1673,30 @@ def youtube_client():
     _YT[tok.name] = build("youtube", "v3", credentials=creds)
     _YT[tok.name + ":creds"] = creds
     return _YT[tok.name]
+
+
+def failover_client(err):
+    """Both Google Cloud projects are logged in to the SAME channel, so when one login is revoked the other carries
+    every upload (each project has quota for ~100 uploads a day) until the broken one is logged in again."""
+    global PROJECT
+    other = 2 if PROJECT == 1 else 1
+    tok, var, _, _ = project_files(other)
+    if _YT.get(f"failed:{other}") or not (tok.exists() or os.environ.get(var)):
+        raise err
+    _YT[f"failed:{PROJECT}"] = True
+    log(f"YouTube login for project {PROJECT} expired; using project {other}'s login instead")
+    PROJECT = other
+    return youtube_client()
+
+
+def push_login_to_github(p):
+    """After --auth: copy the new login into GitHub Secrets so the cloud uses it at once (no manual step)."""
+    tok, var, _, _ = project_files(p)
+    r = subprocess.run(["gh", "secret", "set", var], input=tok.read_text(encoding="utf-8"), text=True,
+                       capture_output=True, cwd=ROOT)
+    log(f"GitHub secret {var}: {'updated' if r.returncode == 0 else 'NOT updated - ' + r.stderr.strip()[:150]}")
+    if r.returncode == 0 and sb_on():
+        sb_rest("DELETE", f"settings?key=eq.login_expired_{p}")  # clears the red banner in the app
 
 
 def analytics_client():
@@ -2927,8 +2953,11 @@ def main():
     LANG = args.lang
     if args.auth:
         PROJECT = args.project
+        tok = project_files(PROJECT)[0]
+        tok.unlink(missing_ok=True)  # --auth always means a fresh browser login (never a failover to the other project)
         youtube_client()
-        log(f"YouTube auth OK, {token_file()[0].name} saved")
+        log(f"YouTube auth OK, {tok.name} saved")
+        push_login_to_github(PROJECT)
         return
     if args.upload_dir:
         upload_existing(args.upload_dir)
