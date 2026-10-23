@@ -167,3 +167,27 @@ alter table public.insights add column if not exists format text;
 
 -- Part-2 Shorts point at the breakout Short they follow (no part 2 of a part 2)
 alter table public.insights add column if not exists followup_of text;
+
+-- YouTube logins made from the phone app's "Log in" button: Google sends a one-time code back to the app, the clock
+-- job trades it for a lasting login. Tokens live in yt_logins: RLS on with no policies = service key only.
+create table if not exists public.yt_logins (
+  project int primary key,
+  token jsonb not null,
+  updated_at timestamptz not null default now()
+);
+alter table public.yt_logins enable row level security;
+
+create table if not exists public.yt_login_requests (
+  id bigint generated always as identity primary key,
+  project int not null check (project in (1, 2)),
+  code text not null,
+  redirect_uri text not null,
+  status text not null default 'pending',
+  error text,
+  created_at timestamptz not null default now()
+);
+alter table public.yt_login_requests enable row level security;
+drop policy if exists "admins add login" on public.yt_login_requests;
+create policy "admins add login" on public.yt_login_requests for insert to authenticated with check (public.is_app_admin());
+drop policy if exists "admins read login status" on public.yt_login_requests;
+create policy "admins read login status" on public.yt_login_requests for select to authenticated using (public.is_app_admin());

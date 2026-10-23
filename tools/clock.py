@@ -7,6 +7,9 @@ import json
 import os
 import subprocess
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 # YouTube allows ~10 uploads per channel per rolling 24 h. The old plan wanted 13 and bunched them in the afternoon,
 # so morning slots found the window full and were skipped. Now 9 uploads, one slot every 3 h, 1 spare for breaking
@@ -93,6 +96,52 @@ def due(now):
                 yield f"{at:%Y-%m-%d %H:%M} breaking", ["-f", "mode=breaking"]
 
 
+def sb(method, path, body=None):
+    req = urllib.request.Request(f"{os.environ['SUPABASE_URL'].rstrip('/')}/rest/v1/{path}", method=method,
+                                 data=json.dumps(body).encode() if body is not None else None, headers={
+        "apikey": os.environ["SUPABASE_SERVICE_KEY"], "Authorization": f"Bearer {os.environ['SUPABASE_SERVICE_KEY']}",
+        "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        data = r.read()
+    return json.loads(data) if data else None
+
+
+def handle_logins():
+    """'Log in to YouTube' in the phone app: Google sends a one-time code back to the app, which stores it. Trade it
+    (within a minute, before it expires) for a lasting login and save that where the factory reads it."""
+    if not os.environ.get("SUPABASE_SERVICE_KEY"):
+        return
+    try:
+        pending = sb("GET", "yt_login_requests?select=*&status=eq.pending&order=id.asc")
+    except Exception:
+        return  # table not there yet, or Supabase busy: try again next minute
+    for req in pending:
+        status, error = "done", None
+        try:
+            client = json.loads(os.environ.get(f"OAUTH_WEB_JSON_{req['project']}") or "{}").get("web") or {}
+            if not client.get("client_secret"):
+                raise RuntimeError(f"web login client for project {req['project']} is not set up")
+            form = urllib.parse.urlencode({"code": req["code"], "client_id": client["client_id"],
+                                           "client_secret": client["client_secret"], "grant_type": "authorization_code",
+                                           "redirect_uri": req["redirect_uri"]}).encode()
+            with urllib.request.urlopen("https://oauth2.googleapis.com/token", data=form, timeout=30) as r:
+                tok = json.loads(r.read())
+            if not tok.get("refresh_token"):
+                raise RuntimeError("Google sent no lasting login (refresh token); log in again")
+            sb("POST", "yt_logins?on_conflict=project", {"project": req["project"], "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "token": {
+                "token": tok["access_token"], "refresh_token": tok["refresh_token"],
+                "token_uri": "https://oauth2.googleapis.com/token", "client_id": client["client_id"],
+                "client_secret": client["client_secret"], "scopes": tok.get("scope", "").split()}})
+            sb("DELETE", f"settings?key=eq.login_expired_{req['project']}")
+        except urllib.error.HTTPError as e:
+            status, error = "error", f"Google: {e.read().decode(errors='replace')[:200]}"
+        except Exception as e:
+            status, error = "error", str(e)[:200]
+        # the one-time code is useless after this either way; drop it from the table
+        sb("PATCH", f"yt_login_requests?id=eq.{req['id']}", {"status": status, "error": error, "code": "-"})
+        print("youtube login for project", req["project"], status, error or "", flush=True)
+
+
 def other_clock_running():
     """True if an OLDER clock run is still live. Newer ones are ignored, so when two runs start together the older
     one keeps the job and the newer one steps aside - never both."""
@@ -130,6 +179,10 @@ def main():
                     sent.add(slot)
                     print(now.strftime("%H:%M"), "started", slot, flush=True)
                 break
+        try:
+            handle_logins()
+        except Exception as e:  # never let a login problem stop the video schedule
+            print("login handling failed:", str(e)[:200], flush=True)
         if last_publish is None or now - last_publish >= datetime.timedelta(minutes=10):
             gh("workflow", "run", "publish.yml")
             last_publish = now

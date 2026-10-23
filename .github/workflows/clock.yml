@@ -22,3 +22,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          # "Log in to YouTube" button in the phone app: the clock trades Google's one-time code for a lasting login
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          OAUTH_WEB_JSON_1: ${{ secrets.OAUTH_WEB_JSON_1 }}
+          OAUTH_WEB_JSON_2: ${{ secrets.OAUTH_WEB_JSON_2 }}

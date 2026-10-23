@@ -1647,7 +1647,15 @@ def youtube_client():
     from googleapiclient.discovery import build
 
     os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")  # user may untick optional scopes on consent screen
-    # Cloud runner: credentials come from encrypted GitHub Secrets, written to git-ignored files at runtime.
+    # Cloud runner: the newest login made with the phone app's "Log in to YouTube" button wins (kept in Supabase,
+    # service key only); otherwise credentials come from encrypted GitHub Secrets, written to git-ignored files.
+    if os.environ.get("GITHUB_ACTIONS") and sb_on():
+        try:
+            row = sb_rest("GET", f"yt_logins?select=token&project=eq.{PROJECT}")
+            if row:
+                tok.write_text(json.dumps(row[0]["token"]), encoding="utf-8")
+        except Exception as e:
+            log(f"app login not read ({str(e)[:100]}), using the saved one")
     for path, var in ((tok, tok_var), (secret, secret_var)):
         if not path.exists() and os.environ.get(var):
             path.write_text(os.environ[var].lstrip("\ufeff"), encoding="utf-8")  # PowerShell pipes add a BOM
@@ -1695,7 +1703,13 @@ def push_login_to_github(p):
     r = subprocess.run(["gh", "secret", "set", var], input=tok.read_text(encoding="utf-8"), text=True,
                        capture_output=True, cwd=ROOT)
     log(f"GitHub secret {var}: {'updated' if r.returncode == 0 else 'NOT updated - ' + r.stderr.strip()[:150]}")
-    if r.returncode == 0 and sb_on():
+    if sb_on():
+        try:  # an older app-button login would otherwise win over this one in the cloud
+            sb_rest("POST", "yt_logins?on_conflict=project", prefer="resolution=merge-duplicates", json={
+                "project": p, "token": json.loads(tok.read_text(encoding="utf-8")),
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()})
+        except Exception as e:
+            log(f"login not saved to Supabase ({str(e)[:100]})")
         sb_rest("DELETE", f"settings?key=eq.login_expired_{p}")  # clears the red banner in the app
 
 

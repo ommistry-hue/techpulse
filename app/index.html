@@ -183,6 +183,16 @@
         </div>
         <p class="hint">Watch hours and earnings are only in YouTube Studio.</p>
       </div>
+      <div class="panel" id="ytLoginPanel">
+        <h2>YouTube login</h2>
+        <p class="hint" style="margin-top:0" id="ytLoginStatus"></p>
+        <div class="actions">
+          <button class="btn primary" data-ytlogin="1">Log in (English uploads)</button>
+          <button class="btn" data-ytlogin="2">Log in (Hindi uploads)</button>
+        </div>
+        <p class="hint">Only needed if the app says a login expired. Pick the channel's Google account, tap Advanced → Go to TechPulse,
+          allow everything. The cloud picks up the new login within a minute. Your password never leaves Google.</p>
+      </div>
       <div class="panel" id="affPanel">
         <h2>Amazon affiliate</h2>
         <p class="hint" style="margin-top:0" id="affStatus"></p>
@@ -287,7 +297,7 @@ async function loadAll() {
     const { data: urls } = await db.storage.from("videos").createSignedUrls(paths, 3600);
     (urls || []).forEach(u => { if (u.signedUrl) S.thumbs[u.path] = u.signedUrl; });
   }
-  renderHome(); renderVideos(); renderInsights(); renderAuto(); renderAffiliate();
+  renderHome(); renderVideos(); renderInsights(); renderAuto(); renderAffiliate(); renderYtLogin();
 }
 
 // ---------- Home ----------
@@ -333,7 +343,7 @@ function renderHome() {
   const paused = S.settings.paused === true, autopub = S.settings.autopublish !== false;
   const expired = [1, 2].filter(p => S.settings[`login_expired_${p}`]);
   let banner;
-  if (expired.length) banner = `<div class="banner bad"><span class="dot"></span><div><b>YouTube login expired</b>Uploads for ${expired.map(p => p === 2 ? "Hindi (project 2)" : "English (project 1)").join(" and ")} ${expired.length === 2 ? "are stopped" : "continue through the other project's login"}. To fix, on the PC run: <code>.venv\\Scripts\\python.exe autotube.py --auth${expired.includes(2) && !expired.includes(1) ? " --project 2" : ""}</code> and log in; the cloud gets the new login automatically.</div></div>`;
+  if (expired.length) banner = `<div class="banner bad"><span class="dot"></span><div><b>YouTube login expired</b>Uploads for ${expired.map(p => p === 2 ? "Hindi (project 2)" : "English (project 1)").join(" and ")} ${expired.length === 2 ? "are stopped" : "continue through the other project's login"}. To fix: More → YouTube login → Log in. Takes 1 minute; the cloud picks it up by itself.</div></div>`;
   else if (bad.length) banner = `<div class="banner bad"><span class="dot"></span><div><b>Safety pause on</b>YouTube rejected or removed ${bad.length} video(s) recently, so new uploads stay private for 14 days. Check YouTube Studio for any warning.</div></div>`;
   else if (paused) banner = `<div class="banner warn"><span class="dot"></span><div><b>Automation paused</b>No new videos are made until you switch it back on in Automation.</div></div>`;
   else banner = `<div class="banner good"><span class="dot"></span><div><b>All systems running</b>${autopub ? "Videos publish automatically after the fact and safety check." : "Auto-publish is off: new videos upload as private for you to review."}</div></div>`;
@@ -605,6 +615,42 @@ $("#affSave").onclick = async () => {
   if (inn && !/-21$/.test(inn) && !confirm("India tracking IDs usually end in -21. Save anyway?")) return;
   if (await setSetting("affiliate", { us, in: inn })) { renderAffiliate(); toast("Saved. Links start on the next product video."); }
 };
+// ---------- YouTube login button ----------
+// Google sends a one-time code back to this page; it goes into yt_login_requests and the cloud clock trades it for
+// a lasting login within a minute. The page never sees the login itself, and the client secret stays in the cloud.
+const YT_SCOPES = ["youtube.upload", "youtube.force-ssl", "yt-analytics.readonly"].map(s => "https://www.googleapis.com/auth/" + s).join(" ");
+const REDIRECT = location.origin + location.pathname;
+async function renderYtLogin() {
+  const { data } = await db.from("yt_login_requests").select("project,status,error,created_at").order("id", { ascending: false }).limit(4);
+  const line = p => {
+    const exp = S.settings[`login_expired_${p}`], last = (data || []).find(r => r.project === p);
+    const name = p === 1 ? "English" : "Hindi";
+    if (last && last.status === "pending") return `${name}: <b>connecting…</b>`;
+    if (last && last.status === "error" && !exp) return `${name}: last login failed (${esc(last.error || "")})`;
+    return `${name}: ${exp ? '<span style="color:var(--danger)">expired - log in</span>' : '<span style="color:var(--ok)">working</span>'}`;
+  };
+  $("#ytLoginStatus").innerHTML = `${line(1)} &nbsp;·&nbsp; ${line(2)}`;
+}
+document.querySelectorAll("[data-ytlogin]").forEach(b => b.onclick = () => {
+  const p = b.dataset.ytlogin, id = (S.settings.oauth_web || {})[p];
+  if (!id) return toast("The login button is not set up yet for this project");
+  const nonce = Math.random().toString(36).slice(2);
+  try { sessionStorage.setItem("tp-yt-state", nonce); } catch (_) {}
+  location.href = "https://accounts.google.com/o/oauth2/v2/auth?" + new URLSearchParams({ client_id: id, redirect_uri: REDIRECT,
+    response_type: "code", scope: YT_SCOPES, access_type: "offline", prompt: "consent", state: `yt${p}.${nonce}` });
+});
+async function finishYtLogin() {
+  const q = new URLSearchParams(location.search), state = q.get("state") || "";
+  if (!/^yt[12]\./.test(state)) return;
+  history.replaceState(null, "", REDIRECT);
+  let saved = null; try { saved = sessionStorage.getItem("tp-yt-state"); sessionStorage.removeItem("tp-yt-state"); } catch (_) {}
+  if (q.get("error")) return toast("Google login cancelled");
+  if (saved && state.split(".")[1] !== saved) return toast("Login link did not match; please try again");
+  const { error } = await db.from("yt_login_requests").insert({ project: +state[2], code: q.get("code"), redirect_uri: REDIRECT });
+  if (error) return toast("Could not save the login: " + error.message);
+  toast("Connecting YouTube… ready in about a minute");
+  setTimeout(() => { loadAll(); }, 75000);
+}
 // ---------- shell ----------
 const TITLES = { home: "Home", videos: "Videos", insights: "Insights", auto: "Automation", more: "More" };
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
@@ -649,6 +695,7 @@ async function start() {
   if (!session) { $("#app").hidden = true; $("#login").hidden = false; return; }
   $("#login").hidden = true; $("#app").hidden = false;
   $("#who").textContent = "Logged in as " + session.user.email;
+  await finishYtLogin();
   loadAll();
 }
 if (!cfg.url) document.body.innerHTML = '<div class="empty">App is not configured yet.</div>';
