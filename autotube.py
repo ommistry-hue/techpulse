@@ -2068,9 +2068,15 @@ def days_ago(n):
     return (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=n)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# words shared by unrelated stories ("Oppo vs iPhone Face-off" is not a repeat of "Moto vs iPhone Face-off")
+GENERIC_WORDS = {"the", "and", "new", "google", "iphone", "samsung", "apple", "pro", "max", "ultra", "plus", "mini",
+                 "lite", "face", "off", "update", "news", "price", "launch", "review", "phone", "battery", "camera",
+                 "india", "vs", "with", "for", "leak", "leaks", "features", "feature"}
+
+
 def repeats(topic, recent):
     """True if `topic` shares most of its key words with a recent topic ("Google Chrome Update" ~ "Chrome update")."""
-    key = lambda t: {w for w in re.findall(r"\w+", t.lower()) if len(w) > 2 and w not in ("the", "and", "new", "google")}
+    key = lambda t: {w for w in re.findall(r"\w+", t.lower()) if len(w) > 2 and w not in GENERIC_WORDS}
     a = key(topic)
     return bool(a) and any(len(a & key(r)) >= max(1, round(0.6 * min(len(a), len(key(r)) or 1))) for r in recent)
 
@@ -2314,7 +2320,7 @@ def plan_viral(trends, niche, used):
 def _plan_viral(trends, niche, used):
     names = VIRAL_FORMATS[LANG]
     fmt_name = names[(datetime.date.today().toordinal() * 2 + shorts_made_today(names)) % len(names)]
-    for attempt in range(3):
+    for attempt in range(4):
         pick = llm_json(f"""You plan one YouTube Short for {CHANNEL()} ({niche}), language: {L()['name']}.
 FORMAT: {SHORT_FORMATS[fmt_name]}
 Choose ONE concrete subject that a huge audience ({'India' if LANG == 'hi' else 'the US'}) searches for right now
@@ -2326,7 +2332,7 @@ Already covered recently (do not repeat): {json.dumps(used[-40:], ensure_ascii=F
 {SAFE_TOPICS}
 Return JSON only: {{"topic": "short name", "search_query": "3-6 word news search query", "angle": "the hook"}}""",
                         required=("topic", "search_query"))
-        if repeats(pick["topic"], used[-15:]):  # the model ignored the list (made "Chrome Update" twice in 12 h)
+        if attempt < 3 and repeats(pick["topic"], used[-15:]):  # last try: take it rather than lose the slot  # the model ignored the list (made "Chrome Update" twice in 12 h)
             log(f"viral: '{pick['topic']}' repeats a recent video, trying another subject")
             used = used + [pick["topic"]]
             continue
@@ -2335,8 +2341,8 @@ Return JSON only: {{"topic": "short name", "search_query": "3-6 word news search
             break
         log(f"viral: '{pick['topic']}' has too few sources, trying another subject")
         used = used + [pick["topic"]]
-    else:
-        return []
+    else:  # no usable subject: fail the run so the clock retries the slot later instead of losing it
+        raise RuntimeError("no subject with enough sources")
     kw = keyword_research(pick["search_query"])
     variant = "fast" if fmt_name in FAST_FORMATS else "core"
     meta = write_checked(lambda note: write_short({**pick, "angle": pick.get("angle", "") + note}, ctx, kw, variant,
