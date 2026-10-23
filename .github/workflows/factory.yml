@@ -153,3 +153,31 @@ jobs:
         env:
           CLOCK_SLOT: ${{ inputs.slot }}  # set for scheduled slots (goal strategy may turn a Short slot into a long video)
         run: python -u autotube.py ${{ steps.plan.outputs.args }} --publish-pending --stats --cleanup --reply-comments
+      # A run that died before or during the factory (setup hang, timeout, cancel) still shows up in the app's Today
+      # panel as failed; rows the factory already finished with a reason are left alone.
+      - name: Record failed slot for the app
+        if: (failure() || cancelled()) && inputs.slot != ''
+        env:
+          SLOT: ${{ inputs.slot }}
+          IN_LANG: ${{ inputs.lang }}
+          RESULT: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 - <<'EOF'
+          import datetime, json, os, urllib.parse, urllib.request
+          base, key = os.environ["SUPABASE_URL"].rstrip("/") + "/rest/v1/slot_log", os.environ["SUPABASE_SERVICE_KEY"]
+          def call(method, query="", body=None, prefer="return=representation"):
+              req = urllib.request.Request(base + query, method=method, data=json.dumps(body).encode() if body else None,
+                  headers={"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json", "Prefer": prefer})
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  return json.loads(r.read() or b"[]")
+          slot = os.environ["SLOT"]
+          reason = ("run timed out or was cancelled" if os.environ["RESULT"] == "cancelled" else
+                    "run failed before finishing (setup or crash); the clock retries it once")
+          row = {"status": "failed", "reason": reason, "run_url": os.environ["RUN_URL"],
+                 "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+          q = urllib.parse.quote(slot)
+          if not call("PATCH", f"?slot=eq.{q}&status=eq.running", row) and not call("GET", f"?slot=eq.{q}&select=key"):
+              lang = os.environ.get("IN_LANG") or "en"
+              call("POST", "", {**row, "key": f"{slot}|{lang}", "slot": slot, "lang": lang})
+          EOF

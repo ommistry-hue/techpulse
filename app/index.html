@@ -290,15 +290,17 @@ function vstate(v) {
 }
 
 async function loadAll() {
-  const [videos, insights, stats, runs, settings, requests] = await Promise.all([
+  const [videos, insights, stats, runs, settings, requests, slots] = await Promise.all([
     db.from("videos").select("*").order("created_at", { ascending: false }),
     db.from("insights").select("*").order("created_at", { ascending: false }).limit(1000),
     db.from("channel_stats").select("*").order("day", { ascending: true }).limit(400),
     db.from("runs").select("*").order("started_at", { ascending: false }).limit(12),
     db.from("settings").select("*"),
     db.from("run_requests").select("*").order("created_at", { ascending: false }).limit(6),
+    db.from("slot_log").select("*").gte("updated_at", new Date(Date.now() - 50 * 3600000).toISOString()).limit(300),
   ]);
   const err = [videos, insights, stats, runs, settings, requests].find(r => r.error);
+  S.slots = slots.data || [];
   if (err) toast("Error: " + err.error.message);
   S.videos = videos.data || []; S.insights = insights.data || []; S.stats = stats.data || [];
   S.runs = runs.data || []; S.requests = requests.data || [];
@@ -335,13 +337,56 @@ function goalsPanel() {
   </div>`;
 }
 
-function nextRuns() {
-  const now = new Date(), out = [];
-  for (let d = 0; d < 2; d++) for (const s of SCHEDULE) {
-    const t = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + d, s.utc[0], s.utc[1]));
-    if (t > now) out.push({ ...s, at: t, theme: DAY_FOCUS[s.lang][dayOrdinal(t) % 7] });
+// ---------- Today: every slot of the viewer's day with its outcome and reason ----------
+function todayItems() {
+  const now = new Date(), start = new Date(now); start.setHours(0, 0, 0, 0);
+  const end = new Date(start.getTime() + 86400000), log = Object.fromEntries((S.slots || []).map(r => [r.key, r]));
+  const used = new Set(), items = [];
+  for (let d = -1; d <= 1; d++) for (const s of SCHEDULE) {
+    const at = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + d, s.utc[0], s.utc[1]));
+    if (at < start || at >= end) continue;
+    const name = `${at.toISOString().slice(0, 10)} ${at.toISOString().slice(11, 16)} ${s.lang}${s.what.includes("viral") ? " viral" : ""}`;
+    const row = log[`${name}|${s.lang}`], retry = log[`${name} retry|${s.lang}`];
+    [row, retry].forEach(r => r && used.add(r.key));
+    items.push({ at, lang: s.lang, what: s.what, row: retry && (!row || row.status === "failed") ? retry : row, retried: !!retry });
   }
-  return out.sort((a, b) => a.at - b.at).slice(0, 3);
+  for (const r of S.slots || []) {  // breaking news, part 2s and other extra runs: shown when they did something
+    if (used.has(r.key) || !["uploaded", "failed", "running"].includes(r.status)) continue;
+    const at = new Date(r.updated_at); if (at < start || at >= end) continue;
+    const label = /breaking/.test(r.slot) ? "Breaking news Short" : /follow-up|part/i.test(r.slot) ? "Part 2 of a hit Short" : "Extra run";
+    items.push({ at, lang: r.lang || "en", what: label, row: r, extra: true });
+  }
+  return items.sort((a, b) => a.at - b.at);
+}
+function slotState(it) {
+  const r = it.row, mins = (Date.now() - it.at) / 60000;
+  if (r) return { uploaded: ["UPLOADED", "b-public"], skipped: ["SKIPPED", "b-private"], failed: ["FAILED", "b-held"],
+    running: ["RUNNING", "b-pending"] }[r.status] || [r.status.toUpperCase(), "b-private"];
+  if (mins < 0) return ["PENDING", "b-lang"];
+  return mins > 180 ? ["MISSED", "b-held"] : ["STARTING", "b-pending"];
+}
+function todayPanel() {
+  const items = todayItems(), count = {};
+  items.forEach(it => { const k = slotState(it)[0]; count[k] = (count[k] || 0) + 1; });
+  const vids = it => (it.row?.videos || []).map(v => `<div style="font-size:13px"><a href="https://youtu.be/${esc(v.id)}" target="_blank" rel="noopener">${esc(v.title)}</a>
+    <span class="muted">${v.kind === "long" ? "· long" : ""}${v.privacy && v.privacy !== "public" ? " · " + esc(v.privacy) : ""}</span></div>`).join("");
+  const why = it => {
+    const r = it.row;
+    if (!r) return Date.now() < it.at ? `<span class="muted">${inTime(it.at)}</span>` : Date.now() - it.at > 180 * 60000
+      ? '<span class="muted">The scheduler did not start this slot.</span>' : '<span class="muted">Starting soon (runs can begin a few minutes late).</span>';
+    return (r.reason ? `<div class="muted" style="font-size:12.5px">${esc(r.reason)}</div>` : "")
+      + (it.retried ? '<div class="muted" style="font-size:12px">Automatic retry after a failure.</div>' : "")
+      + (r.status === "failed" && r.run_url ? `<a style="font-size:12px" href="${esc(r.run_url)}" target="_blank" rel="noopener">Open run log</a>` : "");
+  };
+  const order = ["UPLOADED", "PENDING", "RUNNING", "STARTING", "SKIPPED", "FAILED", "MISSED"];
+  return `<div class="panel"><h2>Today</h2>
+    <p class="hint" style="margin-top:0">${order.filter(k => count[k]).map(k => `${k.toLowerCase()} <b style="color:var(--text)">${count[k]}</b>`).join(" · ")}
+      <br>Slots upload only while YouTube's daily limit has room (now ${S.settings.upload_cap || 10} per 24 h, growing to ${S.settings.upload_target || 15}).</p>
+    <table><tbody>${items.map(it => { const [label, cls] = slotState(it);
+      return `<tr><td><b>${it.at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</b>
+        <span class="badge b-lang">${esc(it.lang.toUpperCase())}</span> <span class="muted" style="font-size:12.5px">${esc(it.what)}</span>
+        ${vids(it)}${why(it)}</td><td class="n"><span class="badge ${cls}">${label}</span></td></tr>`; }).join("")}</tbody></table>
+    ${S.settings.volume?.note ? `<p class="hint">Volume check: ${esc(S.settings.volume.note)}</p>` : ""}</div>`;
 }
 const ago = t => { const m = Math.max(0, Math.round((Date.now() - new Date(t)) / 60000));
   return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.floor(m / 60)} h ago` : `${Math.floor(m / 1440)} days ago`; };
@@ -361,9 +406,7 @@ function renderHome() {
   else banner = `<div class="banner good"><span class="dot"></span><div><b>All systems running</b>${autopub ? "Videos publish automatically after the fact and safety check." : "Auto-publish is off: new videos upload as private for you to review."}</div></div>`;
   const goal = (n, target, label) => `<div class="progress"><div class="lbl"><span>${label}</span><span class="muted">${full(n)} / ${full(target)}</span></div>
     <div class="bar" role="progressbar" aria-valuenow="${n}" aria-valuemax="${target}"><i style="width:${Math.min(100, n / target * 100)}%"></i></div></div>`;
-  const runRow = r => `<tr><td>${when(r.started_at)}<div class="muted" style="font-size:12px">${esc(LANG_NAME[r.lang] || r.lang)} · ${esc(r.note || "")}</div></td>
-    <td class="n">${r.finished_at ? `${r.made} made<br><span class="muted">${r.published} public${r.held ? `, ${r.held} held` : ""}${r.failed ? `, ${r.failed} failed` : ""}</span>` : `<span class="badge b-pending">RUNNING</span>`}</td></tr>`;
-  $("#tab-home").innerHTML = `${banner}${goalsPanel()}
+  $("#tab-home").innerHTML = `${banner}${todayPanel()}${goalsPanel()}
     <div class="tiles">
       <div class="tile"><span>Subscribers</span><b>${full(last.subscribers)}</b>${d("subscribers")}</div>
       <div class="tile"><span>Total views</span><b>${num(last.views)}</b>${d("views")}</div>
@@ -380,13 +423,7 @@ function renderHome() {
       <p class="hint">${last.watch_hours != null ? "Ads need 1,000 subscribers plus 4,000 watch hours (or 10M Shorts views in 90 days). Watch hours update daily, about 2 days behind."
         : "Also needs 4,000 watch hours in 12 months, or 10M Shorts views in 90 days. Watch hours appear here after the one-time analytics login."}</p>
     </div>
-    <div class="panel"><h2>Coming up</h2><table><tbody>
-      ${nextRuns().map(r => `<tr><td><b>${r.at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</b> <span class="muted">${inTime(r.at)}</span>
-        <div class="muted" style="font-size:12.5px">Theme: ${esc(r.theme)}</div></td>
-        <td class="n"><span class="badge b-lang">${r.lang.toUpperCase()}</span><br><span class="muted" style="font-size:12px">${r.what}</span></td></tr>`).join("")}
-    </tbody></table><p class="hint">${paused ? "Paused: these runs will skip making videos." : "GitHub sometimes starts runs up to a few hours late."}</p></div>
-    <div class="panel"><h2>Latest runs</h2>${S.runs.length ? `<table><tbody>${S.runs.slice(0, 6).map(runRow).join("")}</tbody></table>`
-      : '<div class="hint">Run history starts with the next automatic run.</div>'}</div>`;
+    ${paused ? '<p class="hint">Paused: slots will skip making videos.</p>' : ""}`;
   drawGrowth();
 }
 

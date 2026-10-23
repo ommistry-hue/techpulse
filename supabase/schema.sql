@@ -191,3 +191,18 @@ drop policy if exists "admins add login" on public.yt_login_requests;
 create policy "admins add login" on public.yt_login_requests for insert to authenticated with check (public.is_app_admin());
 drop policy if exists "admins read login status" on public.yt_login_requests;
 create policy "admins read login status" on public.yt_login_requests for select to authenticated using (public.is_app_admin());
+
+-- One row per factory run (slot + language): what happened and why, for the app's "Today" panel
+create table if not exists public.slot_log (
+  key text primary key,            -- "<slot name>|<lang>", e.g. "2026-10-23 09:49 hi viral|hi"
+  slot text not null,
+  lang text,
+  status text not null,            -- running / uploaded / skipped / failed
+  reason text,
+  videos jsonb not null default '[]',
+  run_url text,
+  updated_at timestamptz not null default now()
+);
+alter table public.slot_log enable row level security;
+drop policy if exists "admins read slot log" on public.slot_log;
+create policy "admins read slot log" on public.slot_log for select to authenticated using (public.is_app_admin());

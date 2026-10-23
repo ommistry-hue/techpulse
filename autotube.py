@@ -2896,13 +2896,44 @@ def run_breaking(args):
             log(f"breaking [{lang}] failed: {str(e)[:200]}")
 
 
+RUN_STARTED = datetime.datetime.now(datetime.timezone.utc)
+
+
+def slot_status(status, reason=None, videos=None, note=""):
+    """What this slot did and why (running / uploaded / skipped / failed), shown in the app's 'Today' panel.
+    Runs without a clock slot (part 2s, app 'Run now') are named after their start time."""
+    if not sb_on():
+        return
+    slot = os.environ.get("CLOCK_SLOT") or f"{RUN_STARTED:%Y-%m-%d %H:%M} {note or 'extra run'}"
+    run = os.environ.get("GITHUB_RUN_ID")
+    try:
+        sb_rest("POST", "slot_log?on_conflict=key", prefer="resolution=merge-duplicates", json={
+            "key": f"{slot}|{LANG}", "slot": slot, "lang": LANG, "status": status, "reason": (reason or "")[:300],
+            "videos": videos or [], "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "run_url": f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ['GITHUB_REPOSITORY']}"
+                       f"/actions/runs/{run}" if run and os.environ.get("GITHUB_REPOSITORY") else None})
+    except Exception as e:
+        log(f"slot log not saved ({str(e)[:100]})")
+
+
 def run_videos(args, planner, note):
     """Plan -> make -> upload -> record. `planner(trends, niche, used)` returns [(kind, meta)]; [] = skip."""
+    try:
+        return _run_videos(args, planner, note)
+    except BaseException as e:  # crash or SystemExit(1): record why, then fail as before so the clock retries
+        if not isinstance(e, SystemExit) or e.code not in (0, None):
+            slot_status("failed", f"{type(e).__name__}: {e}" if str(e) not in ("", "1") else
+                        "planning failed (AI services busy or no usable story); the clock retries", note=note)
+        raise
+
+
+def _run_videos(args, planner, note):
     global PROJECT
     PROJECT = 2 if LANG == "hi" and project2_available() else 1  # Hindi uploads use the second project's quota
     history = json.loads(HISTORY.read_text(encoding="utf-8")) if HISTORY.exists() else []
     used = used_topics()
     niche = os.environ.get("NICHE", "technology and AI")
+    slot_status("running", f"started: {note}", note=note)
     log(f"Fetching trends ({L()['name']}, {L()['geo']})")
     trends = fetch_trends(L()["geo"])
     if not trends:
@@ -2923,8 +2954,10 @@ def run_videos(args, planner, note):
             args.long, args.shorts = (0, 1) if note.endswith("Shorts") else (getattr(args, "long", 0), getattr(args, "shorts", 0))
             room = want = 1
         if room < max(1, want):
-            log(f"skipped: YouTube's daily channel upload limit is nearly used ({channel_uploads_24h()} uploads in "
+            used24 = channel_uploads_24h()
+            log(f"skipped: YouTube's daily channel upload limit is nearly used ({used24} uploads in "
                 f"24 h); this slot is left for higher-priority videos")
+            slot_status("skipped", f"daily upload limit reached ({used24} uploads in the last 24 h)", note=note)
             return 0
         if want > room:  # e.g. long + Short but only 1 upload left: make the long video only
             args.shorts = max(0, room - (getattr(args, "long", 0) or 0))
@@ -2932,6 +2965,8 @@ def run_videos(args, planner, note):
     jobs = planner(trends, niche, used)
     if not jobs:
         log("nothing to make this run")
+        slot_status("skipped", "no big breaking news right now" if "breaking" in note else
+                    "no suitable story found (or all scripts failed the fact-check)", note=note)
         return 0
     run_id = None
     if sb_on():
@@ -2948,7 +2983,7 @@ def run_videos(args, planner, note):
     run_dir.mkdir(parents=True, exist_ok=True)
 
 
-    failures = 0
+    failures, done, errors = 0, [], []
     for i, (kind, meta) in enumerate(jobs):
         try:
             work = run_dir / f"{i}_{kind}_{slugify(meta['topic'])}"
@@ -2990,6 +3025,7 @@ def run_videos(args, planner, note):
                     LATEST_LONG[LANG] = f"https://youtu.be/{vid}"
                 add_to_playlist(vid)
                 entry["youtube_id"] = vid
+                done.append({"id": vid, "title": meta["title"], "kind": kind, "privacy": privacy})
             record(work, kind, meta, desc, r["duration"], vid, thumb)
             history.append(entry)
             HISTORY.write_text(json.dumps(history, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -3000,7 +3036,15 @@ def run_videos(args, planner, note):
             failures += 1
             counts["failed"] += 1
             log(f"[{kind}] FAILED: {e}")
+            errors.append(f"{kind}: " + ("YouTube refused: daily upload limit" if "exceeded the number of videos"
+                                         in str(e) else str(e)[:150]))
     finish_run()
+    if done:
+        slot_status("uploaded", "; ".join(errors), done, note=note)
+    elif errors:
+        slot_status("failed", "; ".join(errors), note=note)
+    else:
+        slot_status("skipped", "made without upload", note=note)
     return failures
 
 
