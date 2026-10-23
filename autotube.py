@@ -2766,7 +2766,8 @@ def upload_room(reserve=0):
     return cap - channel_uploads_24h() - reserve
 
 
-UPLOAD_TARGET = 20      # daily uploads the channel grows towards (setting 'upload_target' can change it)
+UPLOAD_TARGET = 15      # first step of daily uploads; volume_check() moves it up to UPLOAD_MAX when views hold
+UPLOAD_MAX = 20
 RAMP_PER_DAY = 3        # raise the cap by at most this much per day, so growth looks natural to YouTube
 
 
@@ -2776,6 +2777,8 @@ def probe_due():
     cap = int(get_setting("upload_cap", CHANNEL_UPLOAD_CAP) or CHANNEL_UPLOAD_CAP)
     if cap >= int(get_setting("upload_target", UPLOAD_TARGET) or UPLOAD_TARGET):
         return False
+    if (get_setting("volume", {}) or {}).get("braked") == str(datetime.date.today()):
+        return False  # the automatic brake fired today: no growth
     st = get_setting("upload_probe", {}) or {}
     if st.get("date") != str(datetime.date.today()):
         return True
@@ -2802,6 +2805,41 @@ def note_upload_limit(count, ok):
         if count < cap:  # the limit is lower than we thought
             upsert("upload_cap", max(1, count))
         log(f"upload limit: YouTube refused upload #{count + 1} in 24 h (limit still {count})")
+
+
+def volume_check():
+    """Once a day: does the extra volume still pay? Compares the median views/hour of Shorts from the last 2 days with
+    those from 3-9 days ago. Views per Short fall >40% -> brake (cap -2, no growth today). Views hold (>=85%) and the
+    cap has reached the target -> raise the target by 2 (max UPLOAD_MAX), at most once a week. Fully automatic."""
+    if not sb_on():
+        return
+    today = str(datetime.date.today())
+    st = get_setting("volume", {}) or {}
+    if st.get("date") == today:
+        return
+    upsert = lambda key, value: sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates",
+                                        json={"key": key, "value": value})
+    rows = [r for r in scored_videos(days=9) if r["kind"] == "short"]
+    cut = days_ago(2)
+    recent = sorted(r["vph"] for r in rows if r["created_at"] >= cut)
+    base = sorted(r["vph"] for r in rows if r["created_at"] < cut and r["created_at"] >= days_ago(9))
+    st = {**st, "date": today}
+    if len(recent) < 6 or len(base) < 6:
+        upsert("volume", {**st, "note": f"not enough data ({len(recent)} new / {len(base)} older Shorts)"})
+        return
+    med = lambda v: v[len(v) // 2]
+    ratio = round(med(recent) / max(med(base), 0.01), 2)
+    cap = int(get_setting("upload_cap", CHANNEL_UPLOAD_CAP) or CHANNEL_UPLOAD_CAP)
+    target = int(get_setting("upload_target", UPLOAD_TARGET) or UPLOAD_TARGET)
+    st.update(ratio=ratio, note=f"views/hour per new Short = {ratio:.0%} of the week before")
+    if ratio < 0.6:
+        upsert("upload_cap", max(CHANNEL_UPLOAD_CAP - 1, cap - 2))
+        st.update(braked=today, note=st["note"] + f" -> brake: cap {cap} -> {max(CHANNEL_UPLOAD_CAP - 1, cap - 2)}")
+    elif ratio >= 0.85 and cap >= target and target < UPLOAD_MAX and st.get("target_raised", "") <= days_ago(7)[:10]:
+        upsert("upload_target", min(UPLOAD_MAX, target + 2))
+        st.update(target_raised=today, note=st["note"] + f" -> target {target} -> {min(UPLOAD_MAX, target + 2)}")
+    upsert("volume", st)
+    log(f"volume check: {st['note']}")
 
 
 def uploads_24h(lang):
@@ -2870,6 +2908,10 @@ def run_videos(args, planner, note):
     if not trends:
         raise RuntimeError("No trends from any source")
     if not args.no_upload:
+        try:
+            volume_check()
+        except Exception as e:
+            log(f"volume check skipped ({str(e)[:120]})")
         # plain news Short slots keep 1 upload free for long videos, viral formats, breaking news and part 2s
         plain_short = note.endswith("Shorts") and not getattr(args, "long", 0)
         want = (getattr(args, "long", 0) or 0) + (getattr(args, "shorts", 0) or 0) if note.endswith("Shorts") else 1
