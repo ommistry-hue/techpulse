@@ -2320,20 +2320,27 @@ def plan_viral(trends, niche, used):
 def _plan_viral(trends, niche, used):
     names = VIRAL_FORMATS[LANG]
     fmt_name = names[(datetime.date.today().toordinal() * 2 + shorts_made_today(names)) % len(names)]
+    rejected = []
     for attempt in range(4):
+        shown = trends[:60] if not rejected else random.sample(trends[:80], min(60, len(trends[:80])))
+        avoid = (f"\nREJECTED just now as repeats of recent videos: {json.dumps(rejected, ensure_ascii=False)}. Pick a "
+                 "subject about a DIFFERENT company or product.") if rejected else ""
         pick = llm_json(f"""You plan one YouTube Short for {CHANNEL()} ({niche}), language: {L()['name']}.
 FORMAT: {SHORT_FORMATS[fmt_name]}
 Choose ONE concrete subject that a huge audience ({'India' if LANG == 'hi' else 'the US'}) searches for right now
 (popular phones, iPhone/Samsung/Pixel, ChatGPT/Gemini, WhatsApp, UPI, cheap gadgets, viral AI tools) and that recent
 news articles cover, so the facts can be sourced. Prefer famous brands and things people own.
 Trending now (for inspiration):
-{trends_text(trends[:60])}
-Already covered recently (do not repeat): {json.dumps(used[-40:], ensure_ascii=False)}
+{trends_text(shown)}
+Already covered recently (do not repeat): {json.dumps(used[-40:], ensure_ascii=False)}{avoid}
 {SAFE_TOPICS}
 Return JSON only: {{"topic": "short name", "search_query": "3-6 word news search query", "angle": "the hook"}}""",
                         required=("topic", "search_query"))
-        if attempt < 3 and repeats(pick["topic"], used[-15:]):  # last try: take it rather than lose the slot  # the model ignored the list (made "Chrome Update" twice in 12 h)
+        # a real repeat is never accepted (3 Hindi "Chrome update" Shorts got ~25 views each); if all 4 tries repeat,
+        # the run fails and the clock retries the slot later with fresh trends
+        if repeats(pick["topic"], used[-15:]):
             log(f"viral: '{pick['topic']}' repeats a recent video, trying another subject")
+            rejected.append(pick["topic"])
             used = used + [pick["topic"]]
             continue
         ctx = story_context(pick["search_query"], n=10)
