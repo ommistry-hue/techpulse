@@ -2951,8 +2951,9 @@ def _run_videos(args, planner, note):
         # likely higher, and each accepted upload above the cap raises it - so all slots run again as soon as it is
         if room < max(1, want) and probe_due():
             log("upload limit probe: trying one upload above the current cap (YouTube may have raised the limit)")
-            args.long, args.shorts = (0, 1) if note.endswith("Shorts") else (getattr(args, "long", 0), getattr(args, "shorts", 0))
-            room = want = 1
+            # one more upload than the cap allows; the trim below keeps the long video first (it used to turn a
+            # long + Short slot into a Short only, which lost the day's long video)
+            room = max(0, room) + 1
         if room < max(1, want):
             used24 = channel_uploads_24h()
             log(f"skipped: YouTube's daily channel upload limit is nearly used ({used24} uploads in "
