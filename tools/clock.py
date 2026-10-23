@@ -11,13 +11,16 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# YouTube allows ~10 uploads per channel per rolling 24 h. The old plan wanted 13 and bunched them in the afternoon,
-# so morning slots found the window full and were skipped. Now 9 uploads, one slot every 3 h, 1 spare for breaking
-# news / part 2s. Data (Oct 16-22): EN news Shorts 100-800 views, HI viral Shorts ~60, HI plain/long only 10-28.
+# Up to ~21 uploads a day: one slot every 72 min. YouTube's per-channel limit (rolling 24 h) was ~10 before the
+# channel's verification; the factory checks the learned cap before every slot (skips when full, probes above it
+# at most +3 a day), so extra slots only produce videos as fast as YouTube allows - growth stays gradual.
+# Data (Oct 16-23): EN news Shorts 100-800 views, HI viral Shorts ~25-60, HI plain/long 10-28.
 # (UTC time, language, long videos, Shorts)
-SLOTS = [("00:13", "en", 0, 1), ("06:13", "en", 0, 1), ("12:13", "en", 1, 1), ("21:13", "en", 0, 1)]
-# Viral-format track (versus tests, top 3, budget lists, tricks): HI 08:43 / 14:43 / 20:43 IST, EN 2:13 pm ET
-VIRAL = [("03:13", "hi"), ("09:13", "hi"), ("15:13", "hi"), ("18:13", "en")]
+SLOTS = [("00:13", "en", 0, 1), ("05:01", "en", 0, 1), ("06:13", "en", 0, 1), ("11:01", "en", 0, 1),
+         ("12:13", "en", 1, 1), ("17:01", "en", 0, 1), ("19:25", "en", 0, 1), ("21:49", "en", 0, 1)]
+# Viral-format track (versus, top 3, budget lists, tricks). HI times = 6:55 am - 9:19 pm IST
+VIRAL = [("01:25", "hi"), ("02:37", "en"), ("03:49", "hi"), ("07:25", "hi"), ("08:37", "en"), ("09:49", "hi"),
+         ("13:25", "hi"), ("14:37", "en"), ("15:49", "hi"), ("18:13", "en"), ("20:37", "en"), ("23:01", "en")]
 BREAKING = [f"{h:02d}:29" for h in range(0, 24, 3)]   # breaking-news check every 3 hours
 CATCH_UP = datetime.timedelta(hours=3)                # a late slot still runs within 3 h; older ones are skipped
 BREAKING_WINDOW = datetime.timedelta(minutes=90)

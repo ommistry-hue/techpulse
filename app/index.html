@@ -239,16 +239,28 @@ const db = supabase.createClient(cfg.url, cfg.key);
 const S = { videos: [], insights: [], stats: [], runs: [], settings: {}, requests: [], thumbs: {}, openId: null,
             vfilter: "all", ifilter: "all" };
 
-// Mirrors the cloud schedule (tools/clock.py): one slot every 3 h, 9 uploads/day inside YouTube's ~10/24 h limit.
+// Mirrors the cloud schedule (tools/clock.py): a slot every 72 min; slots run as fast as YouTube's daily limit allows.
 const SCHEDULE = [
   { utc: [0, 13], lang: "en", what: "1 Short" },
-  { utc: [3, 13], lang: "hi", what: "1 viral-format Short" },
+  { utc: [1, 25], lang: "hi", what: "1 viral-format Short" },
+  { utc: [2, 37], lang: "en", what: "1 viral-format Short" },
+  { utc: [3, 49], lang: "hi", what: "1 viral-format Short" },
+  { utc: [5, 1], lang: "en", what: "1 Short" },
   { utc: [6, 13], lang: "en", what: "1 Short" },
-  { utc: [9, 13], lang: "hi", what: "1 viral-format Short" },
+  { utc: [7, 25], lang: "hi", what: "1 viral-format Short" },
+  { utc: [8, 37], lang: "en", what: "1 viral-format Short" },
+  { utc: [9, 49], lang: "hi", what: "1 viral-format Short" },
+  { utc: [11, 1], lang: "en", what: "1 Short" },
   { utc: [12, 13], lang: "en", what: "1 long video + 1 Short" },
-  { utc: [15, 13], lang: "hi", what: "1 viral-format Short" },
+  { utc: [13, 25], lang: "hi", what: "1 viral-format Short" },
+  { utc: [14, 37], lang: "en", what: "1 viral-format Short" },
+  { utc: [15, 49], lang: "hi", what: "1 viral-format Short" },
+  { utc: [17, 1], lang: "en", what: "1 Short" },
   { utc: [18, 13], lang: "en", what: "1 viral-format Short" },
-  { utc: [21, 13], lang: "en", what: "1 Short" },
+  { utc: [19, 25], lang: "en", what: "1 Short" },
+  { utc: [20, 37], lang: "en", what: "1 viral-format Short" },
+  { utc: [21, 49], lang: "en", what: "1 Short" },
+  { utc: [23, 1], lang: "en", what: "1 viral-format Short" },
 ];
 const DAY_FOCUS = {
   en: ["AI tools and AI drama", "Phone launches and leaks", "Hacks, outages and data leaks",

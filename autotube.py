@@ -2766,25 +2766,39 @@ def upload_room(reserve=0):
     return cap - channel_uploads_24h() - reserve
 
 
+UPLOAD_TARGET = 20      # daily uploads the channel grows towards (setting 'upload_target' can change it)
+RAMP_PER_DAY = 3        # raise the cap by at most this much per day, so growth looks natural to YouTube
+
+
 def probe_due():
-    """At most one probe per day: an upload above the cap tells whether YouTube raised the channel's limit
-    (e.g. after 'Advanced features' verification) - fully automatic, no one has to watch for it."""
+    """May this run try one upload above the cap? Only while below the target, at most RAMP_PER_DAY raises a day,
+    and never again on a day YouTube refused one - fully automatic, no one has to watch for it."""
+    cap = int(get_setting("upload_cap", CHANNEL_UPLOAD_CAP) or CHANNEL_UPLOAD_CAP)
+    if cap >= int(get_setting("upload_target", UPLOAD_TARGET) or UPLOAD_TARGET):
+        return False
     st = get_setting("upload_probe", {}) or {}
-    return st.get("date") != str(datetime.date.today())
+    if st.get("date") != str(datetime.date.today()):
+        return True
+    return not st.get("refused") and st.get("raised", 0) < RAMP_PER_DAY
 
 
 def note_upload_limit(count, ok):
-    """Learn the real limit: a success above the cap raises 'upload_cap'; a refusal records today's probe."""
+    """Learn the real limit: a success above the cap raises 'upload_cap'; a refusal stops probing for today."""
     if not sb_on():
         return
     cap = int(get_setting("upload_cap", CHANNEL_UPLOAD_CAP) or CHANNEL_UPLOAD_CAP)
     upsert = lambda key, value: sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates",
                                         json={"key": key, "value": value})
+    st = get_setting("upload_probe", {}) or {}
+    today = str(datetime.date.today())
+    if st.get("date") != today:
+        st = {"date": today, "raised": 0}
     if ok and count > cap:
         upsert("upload_cap", count)
+        upsert("upload_probe", {**st, "raised": st.get("raised", 0) + 1})
         log(f"upload limit: YouTube accepted upload #{count} in 24 h -> daily cap raised to {count}")
     elif not ok:
-        upsert("upload_probe", {"date": str(datetime.date.today()), "limit_at": count})
+        upsert("upload_probe", {**st, "refused": True, "limit_at": count})
         if count < cap:  # the limit is lower than we thought
             upsert("upload_cap", max(1, count))
         log(f"upload limit: YouTube refused upload #{count + 1} in 24 h (limit still {count})")
