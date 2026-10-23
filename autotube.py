@@ -2954,7 +2954,7 @@ def _run_videos(args, planner, note):
             # one more upload than the cap allows; the trim below keeps the long video first (it used to turn a
             # long + Short slot into a Short only, which lost the day's long video)
             room = max(0, room) + 1
-        if room < max(1, want):
+        if room < 1:  # with 1 upload of room a long + Short slot still makes its long video (trim below)
             used24 = channel_uploads_24h()
             log(f"skipped: YouTube's daily channel upload limit is nearly used ({used24} uploads in "
                 f"24 h); this slot is left for higher-priority videos")
