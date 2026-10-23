@@ -331,8 +331,10 @@ function renderHome() {
   const d = (k) => { const x = (last[k] || 0) - (weekAgo[k] || 0); return x > 0 ? `<span class="delta up">+${num(x)} this week</span>` : `<span class="delta">+0 this week</span>`; };
   const bad = S.insights.filter(i => i.health && i.health !== "missing" && i.health_at && new Date(i.health_at) > new Date(Date.now() - 14 * 86400000));
   const paused = S.settings.paused === true, autopub = S.settings.autopublish !== false;
+  const expired = [1, 2].filter(p => S.settings[`login_expired_${p}`]);
   let banner;
-  if (bad.length) banner = `<div class="banner bad"><span class="dot"></span><div><b>Safety pause on</b>YouTube rejected or removed ${bad.length} video(s) recently, so new uploads stay private for 14 days. Check YouTube Studio for any warning.</div></div>`;
+  if (expired.length) banner = `<div class="banner bad"><span class="dot"></span><div><b>YouTube login expired</b>Uploads for ${expired.map(p => p === 2 ? "Hindi (project 2)" : "English (project 1)").join(" and ")} are stopped. On the PC run: <code>.venv\\Scripts\\python.exe autotube.py --auth${expired.includes(2) && !expired.includes(1) ? " --project 2" : ""}</code>, then copy the new login to GitHub Secrets.</div></div>`;
+  else if (bad.length) banner = `<div class="banner bad"><span class="dot"></span><div><b>Safety pause on</b>YouTube rejected or removed ${bad.length} video(s) recently, so new uploads stay private for 14 days. Check YouTube Studio for any warning.</div></div>`;
   else if (paused) banner = `<div class="banner warn"><span class="dot"></span><div><b>Automation paused</b>No new videos are made until you switch it back on in Automation.</div></div>`;
   else banner = `<div class="banner good"><span class="dot"></span><div><b>All systems running</b>${autopub ? "Videos publish automatically after the fact and safety check." : "Auto-publish is off: new videos upload as private for you to review."}</div></div>`;
   const goal = (n, target, label) => `<div class="progress"><div class="lbl"><span>${label}</span><span class="muted">${full(n)} / ${full(target)}</span></div>

@@ -1655,7 +1655,15 @@ def youtube_client():
     creds = Credentials.from_authorized_user_file(str(tok)) if tok.exists() else None
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except Exception as e:  # revoked/expired login: tell the phone app, then fail as before
+                if "invalid_grant" in str(e) and sb_on():
+                    sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates", json={
+                        "key": f"login_expired_{PROJECT}", "value": {"at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "lang": LANG}})
+                raise
+            if sb_on() and get_setting(f"login_expired_{PROJECT}", None):
+                sb_rest("DELETE", f"settings?key=eq.login_expired_{PROJECT}")
         else:
             flow = InstalledAppFlow.from_client_secrets_file(str(secret), SCOPES)
             creds = flow.run_local_server(port=0)
