@@ -456,10 +456,10 @@ Return JSON only:
  "shorts": [{{"topic": "...", "story": "...", "search_query": "...", "angle": "..."}}]}}""", required=("long", "shorts"))
 
 
-def story_context(query, n=10):
+def story_context(query, n=10, days=3):
     """Recent headlines from several outlets: the fact base for the script and the 'Sources' list."""
     try:
-        items = rss_items("https://news.google.com/rss/search?q=" + requests.utils.quote(f"{query} when:3d")
+        items = rss_items("https://news.google.com/rss/search?q=" + requests.utils.quote(f"{query} when:{days}d")
                           + "&" + L()["news"])[:n]
     except Exception as e:
         log(f"  news search failed: {e}")
@@ -2402,13 +2402,20 @@ Return JSON only: {{"comments": [{{"id": "...", "type": "...", "sentiment": "...
                 log(f"  hide failed: {str(e)[:100]}")
         elif kind in ("fake", "correction"):
             check = recheck_video(c)
+            if check.get("verdict") == "unsure":  # second, deeper look: search the news for the viewer's own claim
+                check = recheck_video(c, query=f"{c.get('topic') or c['video']} {c['text'][:80]}")
             if check.get("verdict") == "viewer_right" and check.get("correction"):
                 text = check.get("reply") or text
                 add_correction(yt, c["video_id"], check["correction"])
                 save_lesson(f"Viewers corrected: {check['correction']} (video '{c['video'][:60]}')")
                 row["action"] = "corrected"
-            elif check.get("verdict") == "unsure":
-                row["needs_you"] = True  # shown in the app: a person should look
+            elif check.get("verdict") == "unsure" and kind == "correction":
+                # still unclear: thank them, change nothing (never "correct" a video on an unverified claim)
+                text = ("thanks, we'll double-check that against the sources" if c["lang"] == "en"
+                        else "thanks, हम sources से दोबारा check करेंगे")
+        if re.search(r"copyright|lawsuit|legal action|lawyer|dmca|my (video|footage|photo|image) (was )?used",
+                     c["text"], re.I):
+            row["needs_you"] = True  # rights/legal claims: a person decides (handled at the owner's checks)
         elif kind == "request" and r.get("request_topic"):
             add_topic_request(r["request_topic"], c["lang"])
         if text and not c["answered"] and (kind in ALWAYS_REPLY or random.random() < SOMETIMES_REPLY.get(kind, 0)):
@@ -2438,11 +2445,13 @@ Return JSON only: {{"comments": [{{"id": "...", "type": "...", "sentiment": "...
         f"{sum(r['action'] == 'hidden' for r in rows)} hidden, {sum(r['needs_you'] for r in rows)} need you")
 
 
-def recheck_video(c):
+def recheck_video(c, query=None):
     """A viewer says the video is fake or wrong: compare their claim with our description and fresh headlines."""
     try:
-        desc = (sb_rest("GET", f"videos?select=description&youtube_id=eq.{c['video_id']}") or [{}])[0].get("description") or ""
-        ctx = story_context(c.get("topic") or c["video"], n=10)
+        # from YouTube itself: the app's video records are cleaned up after a week, the description stays
+        items = youtube_client().videos().list(part="snippet", id=c["video_id"]).execute().get("items", [])
+        desc = items[0]["snippet"].get("description", "") if items else ""
+        ctx = story_context(query or c.get("topic") or c["video"], n=10, days=30)  # the video may be weeks old
         return llm_json(f"""A viewer commented on our news Short "{c['video']}": "{c['text']}"
 OUR VIDEO DESCRIPTION (what the video said, plus its sources):
 {desc[:2500]}
