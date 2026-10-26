@@ -2116,6 +2116,29 @@ def description(meta, short, topic, credits, chapter_list=()):
     return f"{head}\n\n{tail}"
 
 
+def seo_check(days=4, limit=6):
+    """Daily self-check: any video from the last few days below the SEO standard (15+ tags, 10+ hashtags, a topics
+    list) gets refresh_seo. Keeps every new video up to standard without anyone checking by hand."""
+    global LANG
+    current = LANG
+    vids = [r["youtube_id"] for r in sb_rest("GET", f"insights?select=youtube_id&kind=eq.short&created_at=gte.{days_ago(days)}")]
+    fixed = 0
+    yt = youtube_client()
+    for i in range(0, len(vids), 50):
+        for v in yt.videos().list(part="snippet", id=",".join(vids[i:i + 50])).execute().get("items", []):
+            s, d = v["snippet"], v["snippet"].get("description", "")
+            ok = (len(s.get("tags", [])) >= 15 and len(re.findall(r"#\w+", d)) >= 10
+                  and any(LANGS[lg]["text"]["topics"] in d for lg in LANGS))
+            if not ok and fixed < limit:
+                try:
+                    refresh_seo(v["id"])
+                    fixed += 1
+                except Exception as e:
+                    log(f"  SEO refresh failed for {v['id']}: {str(e)[:100]}")
+    LANG = current
+    log(f"SEO check: {len(vids)} recent videos, {fixed} upgraded")
+
+
 def refresh_seo(vid, dry=False):
     """Bring an older video's metadata up to the current SEO standard: 30-40 relevant tags, a topics list, the news
     outlets covering the story and 10-12 hashtags. Title and existing description text stay; no new claims."""
@@ -2736,6 +2759,10 @@ def update_stats(full=True):
         optimize_titles()
     except Exception as e:
         log(f"titles skipped: {str(e)[:160]}")
+    try:
+        seo_check()
+    except Exception as e:
+        log(f"SEO check skipped: {str(e)[:160]}")
     try:
         learn_rules()
     except Exception as e:
