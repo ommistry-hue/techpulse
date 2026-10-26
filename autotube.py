@@ -214,6 +214,39 @@ def openrouter(prompt, model, timeout=None):
     return data["choices"][0]["message"]["content"]
 
 
+def groq(prompt, model, timeout=None):
+    """Groq free tier (OpenAI-compatible, very fast): an independent provider between Gemini and OpenRouter."""
+    r = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {os.environ['GROQ_API_KEY']}"},
+        json={"model": model, "temperature": 0.9,
+              "messages": [{"role": "user", "content": prompt + "\n\nRespond with the JSON object only."}]},
+        timeout=timeout or LLM_TIMEOUT,
+    )
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
+
+
+_GROQ_MODELS = None
+
+
+def groq_models():
+    """Groq's live model list (models come and go): chat models only, biggest first."""
+    global _GROQ_MODELS
+    if _GROQ_MODELS is None:
+        try:
+            data = requests.get("https://api.groq.com/openai/v1/models", timeout=30,
+                                headers={"Authorization": f"Bearer {os.environ['GROQ_API_KEY']}"}).json()["data"]
+            skip = ("whisper", "guard", "orpheus", "tts", "allam", "vision")
+            ids = [m["id"] for m in data if not any(s in m["id"] for s in skip)]
+            size = lambda i: int((re.findall(r"(\d+)b", i) or ["0"])[-1])
+            _GROQ_MODELS = sorted(ids, key=lambda i: -size(i))[:3]
+        except Exception as e:
+            log(f"Groq model list failed: {e}")
+            _GROQ_MODELS = []
+    return _GROQ_MODELS
+
+
 _FREE_MODELS = None
 _GEMINI_FOUND = None
 
@@ -258,6 +291,8 @@ def llm_providers():
     if os.environ.get("GEMINI_API_KEY"):
         preferred = split("GEMINI_MODELS") or ["gemini-flash-latest"]
         providers += [(gemini, m) for m in preferred + [m for m in gemini_discovered() if m not in preferred]]
+    if os.environ.get("GROQ_API_KEY"):
+        providers += [(groq, m) for m in groq_models()]
     if os.environ.get("OPENROUTER_API_KEY"):
         preferred = split("OPENROUTER_MODELS")
         providers += [(openrouter, m) for m in preferred + [m for m in openrouter_free_models() if m not in preferred]]

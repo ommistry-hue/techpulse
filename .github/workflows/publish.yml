@@ -24,6 +24,7 @@ jobs:
       YT_CLIENT_SECRET_JSON: ${{ secrets.YT_CLIENT_SECRET_JSON }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}       # comment replies are written by the AI
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       GEMINI_MODELS: ${{ vars.GEMINI_MODELS }}
       OPENROUTER_MODELS: ${{ vars.OPENROUTER_MODELS }}
       CHANNEL_NAME: ${{ vars.CHANNEL_NAME }}
