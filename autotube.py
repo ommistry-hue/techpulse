@@ -2110,6 +2110,55 @@ def description(meta, short, topic, credits, chapter_list=()):
     return f"{head}\n\n{tail}"
 
 
+def refresh_seo(vid, dry=False):
+    """Bring an older video's metadata up to the current SEO standard: 30-40 relevant tags, a topics list, the news
+    outlets covering the story and 10-12 hashtags. Title and existing description text stay; no new claims."""
+    global LANG
+    yt = youtube_client()
+    snip = yt.videos().list(part="snippet", id=vid).execute()["items"][0]["snippet"]
+    row = (sb_rest("GET", f"insights?select=topic,lang,kind&youtube_id=eq.{vid}") or [{}])[0] if sb_on() else {}
+    LANG = row.get("lang") or ("hi" if (snip.get("defaultLanguage") or "").startswith("hi") else "en")
+    topic = row.get("topic") or snip["title"]
+    short = row.get("kind", "short") == "short"
+    old = snip.get("description", "")
+    body_text = re.sub(r"(\n\s*#\w+(\s+#\w+)*\s*)+$", "", old).rstrip()  # drop the old hashtag line at the end
+    kw = keyword_research(topic)
+    outlets = sorted({c["source"] for c in story_context(topic, n=10) if c["source"]})[:8]
+    res = llm_json(f"""Improve the search metadata of this existing YouTube {'Short' if short else 'video'}.
+TITLE: {snip['title']}
+DESCRIPTION (what the video says): {old[:1500]}
+YOUTUBE SEARCH SUGGESTIONS: {', '.join(kw) or '(none)'}
+{SEO_RULES}
+{lang_rules()}
+Only describe what the title and description already say - never add new facts or claims.
+Tags and topics must be about THIS exact story: drop any search suggestion about something else (other tools,
+other languages/regions like "tamil", gift cards, makers/generators, tutorials). 20-35 strictly relevant tags beat
+40 loose ones (unrelated tags count as spam).
+Return JSON only: {{"topics": ["5-8 search phrases"], "tags": ["20-35 tags"], "hashtags": ["10-12 hashtags"]}}""",
+                   required=("tags", "hashtags"))
+    tx = L()["text"]
+    extra = []
+    if res.get("topics") and tx["topics"] not in old:
+        extra.append(tx["topics"] + "\n" + "\n".join(f"- {t}" for t in res["topics"][:8] if isinstance(t, str)))
+    if outlets and "Sources" not in old and "More coverage" not in old:
+        extra.append("More coverage: " + ", ".join(outlets))  # outlets reporting the story (not claimed as our sources)
+    # new blocks go before the image credits (credits stay last, just above the hashtags)
+    cut = body_text.find(tx["credits"])
+    head, credits = (body_text[:cut].rstrip(), body_text[cut:]) if cut > 0 else (body_text, "")
+    build = lambda: "\n\n".join(p for p in [head, *extra, credits, hashtags(res, short, topic)] if p)
+    desc = build()
+    while len(desc.encode()) > 4900 and extra:  # YouTube's 5,000-byte limit
+        extra.pop()
+        desc = build()
+    tags = clean_tags({"tags": res["tags"]})
+    if dry:
+        return {"old_tags": snip.get("tags", []), "new_tags": tags, "old_desc": old, "new_desc": desc}
+    body = {k: snip[k] for k in ("title", "categoryId", "defaultLanguage", "defaultAudioLanguage") if k in snip}
+    yt.videos().update(part="snippet", body={"id": vid, "snippet": {**body, "description": desc, "tags": tags}}).execute()
+    log(f"SEO refreshed: {snip['title'][:50]} ({len(snip.get('tags', []))} -> {len(tags)} tags)")
+    return {"new_tags": tags}
+
+
 SAFETY_PAUSE = False  # set by channel_health(): YouTube rejected/removed something recently
 
 
