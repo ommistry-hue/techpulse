@@ -453,6 +453,26 @@ def topic_rules(niche, used):
 
 
 STORY_COOLDOWN_H, STORY_MAX = 48, 2  # one product/event: max 2 videos per 48 h (14 iPhone Duo videos in 3 days hurt)
+
+# Recovery mode (settings key "recovery" = {"until": "YYYY-MM-DD"}): after YouTube cut the reach of new Shorts (Oct 25:
+# 17 uploads/day, 14 on one story), fewer, stronger, all-different videos until the test audience comes back.
+RECOVERY = None
+RECOVERY_UPLOADS = 8
+RECOVERY_MIN_SCORE = 70  # script score a Short needs to be uploaded during recovery
+# clock slots that still run during recovery: one every ~3 h, mostly English (UTC "HH:MM lang[ viral]")
+RECOVERY_SLOTS = {"00:13 en", "02:37 en viral", "06:13 en", "09:49 hi viral", "12:13 en", "15:49 hi viral",
+                  "18:13 en viral", "21:49 en"}
+RECOVERED_VIEWS_24H = 50  # median views at 24 h that counts as "YouTube is testing our Shorts normally again"
+
+
+def apply_recovery():
+    """Read recovery mode once per run: each story only once per 48 h while it is on."""
+    global RECOVERY, STORY_MAX
+    rec = (get_setting("recovery", {}) or {}) if sb_on() else {}
+    RECOVERY = rec if rec.get("until", "") >= str(datetime.date.today()) else None
+    if RECOVERY:
+        STORY_MAX = 1
+        log(f"recovery mode until {RECOVERY['until']}: {RECOVERY_UPLOADS} strong, all-different videos a day")
 MIN_OUTLETS = 2  # never make a video about something fewer than 2 different news outlets report
 
 
@@ -1078,6 +1098,12 @@ def write_checked(write, ctx, kind):
     polish = (lambda m: title_doctor(script_doctor(m))) if kind == "short" else (lambda m: m)
     meta = fact_check(polish(write("")), ctx, kind)
     if not meta.get("hold"):
+        if RECOVERY and kind == "short" and (meta.get("script_score") or 0) < RECOVERY_MIN_SCORE:
+            log(f"[short] script score {meta.get('script_score')} < {RECOVERY_MIN_SCORE} in recovery mode, one stronger rewrite")
+            meta = fact_check(polish(write(". REWRITE STRONGER: hook names the product and the stakes in under 10 words, "
+                                           "one concrete number, a clear verdict, a 'why it matters to you' line")), ctx, kind)
+            if meta.get("hold") or (meta.get("script_score") or 0) < RECOVERY_MIN_SCORE:
+                raise RuntimeError(f"weak script (score {meta.get('script_score')}): not uploaded in recovery mode")
         return meta
     issues = meta["fact_check"]["issues"]
     if any(str(i).startswith("SAFETY") for i in issues):
@@ -2901,6 +2927,8 @@ def double_down():
     """Breakout rule: a Short that clearly outperforms the channel (3x the median views/hour, 300+ views) gets up to
     2 follow-up Shorts on the same story from new angles, at least 6 h apart - the Shorts feed already showed the
     audience wants this topic. Queued as run requests (started when no factory run is busy)."""
+    if RECOVERY:
+        return  # recovery mode: no part 2s (more videos on one story is what hurt reach)
     now = datetime.datetime.now(datetime.timezone.utc)
     state = get_setting("followups", {}) or {}
     today = str(now.date())
@@ -3503,6 +3531,21 @@ def volume_check():
     upsert = lambda key, value: sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates",
                                         json={"key": key, "value": value})
     rows = [r for r in scored_videos(days=11, min_hours=24) if r["kind"] == "short" and r.get("views_24h") is not None]
+    target = int(get_setting("upload_target", UPLOAD_TARGET) or UPLOAD_TARGET)
+    if RECOVERY:
+        if target != RECOVERY_UPLOADS:
+            upsert("upload_target", RECOVERY_UPLOADS)
+        upsert("volume", {**st, "date": today, "note": f"recovery mode until {RECOVERY['until']}: {RECOVERY_UPLOADS} videos/day"})
+        return
+    if target < UPLOAD_TARGET:  # coming back from recovery: +2 a day while new Shorts get a normal test audience again
+        fresh = sorted(r["views_24h"] for r in rows if r["created_at"] >= days_ago(3))
+        med = fresh[len(fresh) // 2] if len(fresh) >= 4 else 0
+        new = min(UPLOAD_TARGET, target + 2) if med >= RECOVERED_VIEWS_24H else target
+        if new != target:
+            upsert("upload_target", new)
+        upsert("volume", {**st, "date": today, "note": f"after recovery: new Shorts median {med} views at 24 h -> "
+                                                       f"{new} videos/day" + ("" if new > target else " (holding)")})
+        return
     cut = days_ago(4)
     recent = sorted(r["views_24h"] for r in rows if r["created_at"] >= cut)
     base = sorted(r["views_24h"] for r in rows if r["created_at"] < cut)
@@ -3620,6 +3663,12 @@ def _run_videos(args, planner, note):
     history = json.loads(HISTORY.read_text(encoding="utf-8")) if HISTORY.exists() else []
     used = used_topics()
     niche = os.environ.get("NICHE", "technology and AI")
+    slot = os.environ.get("CLOCK_SLOT", "").removesuffix(" retry")[11:]  # "2026-10-26 09:49 hi viral" -> "09:49 hi viral"
+    if RECOVERY and slot and "breaking" not in slot and slot not in RECOVERY_SLOTS:
+        log(f"recovery mode: slot '{slot}' rests today (fewer, stronger videos)")
+        slot_status("skipped", "recovery mode: fewer, stronger videos until YouTube shows new Shorts normally again",
+                    note=note)
+        return 0
     slot_status("running", f"started: {note}", note=note)
     log(f"Fetching trends ({L()['name']}, {L()['geo']})")
     trends = fetch_trends(L()["geo"])
@@ -3761,6 +3810,10 @@ def main():
     ap.add_argument("--llm-check", action="store_true", help="test every AI model in the fallback chain")
     args = ap.parse_args()
     load_env()
+    try:
+        apply_recovery()
+    except Exception as e:
+        log(f"recovery mode not read ({str(e)[:100]})")
     if args.llm_check:
         llm_check()
         return
