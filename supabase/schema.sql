@@ -209,3 +209,31 @@ create policy "admins read slot log" on public.slot_log for select to authentica
 
 -- Retention score (0-100) the script doctor gave each Short, to check later whether it predicts views
 alter table public.insights add column if not exists script_score int;
+
+-- Story cooldown (same product/event max 2 videos per 48 h) and fair growth measurement (views at 24 h old)
+alter table public.insights add column if not exists story text;
+alter table public.insights add column if not exists views_24h int;
+
+-- Every viewer comment, its type and what the automation did (app "Comments" tab, health score, learning)
+create table if not exists public.comments (
+  id text primary key,               -- YouTube comment thread id
+  video_id text,
+  video_title text,
+  lang text,
+  text text,
+  type text,                         -- question / ai_callout / fake / correction / opinion / praise / criticism /
+                                     -- request / risky / abuse / spam / emoji
+  sentiment text,                    -- positive / neutral / negative
+  action text,                       -- replied / hidden / skipped / flagged / corrected
+  reply text,
+  needs_you boolean not null default false,
+  hide_requested boolean not null default false,
+  commented_at timestamptz,
+  handled_at timestamptz not null default now()
+);
+alter table public.comments enable row level security;
+drop policy if exists "admins read comments" on public.comments;
+create policy "admins read comments" on public.comments for select to authenticated using (public.is_app_admin());
+drop policy if exists "admins hide comments" on public.comments;
+create policy "admins hide comments" on public.comments for update to authenticated
+  using (public.is_app_admin()) with check (public.is_app_admin());

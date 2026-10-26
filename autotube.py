@@ -354,6 +354,15 @@ TOPIC_SCORE = ("TOPIC SCORE - rate each candidate story and pick the highest:\n"
                " with no product people use")
 
 
+def requests_block():
+    """Topics viewers asked for in comments (last 7 days, this language): preferred when fresh news covers them."""
+    week_ago = str(datetime.date.today() - datetime.timedelta(days=7))
+    reqs = [r["topic"] for r in (get_setting("topic_requests", []) or []) if r.get("lang") == LANG
+            and r.get("at", "") >= week_ago] if sb_on() else []
+    return ("VIEWER REQUESTS (asked for in our comments - +3 if fresh news covers it): " + "; ".join(reqs[-10:]) + "\n"
+            ) if reqs else ""
+
+
 def topic_rules(niche, used):
     audience = ("Audience: Indian viewers. Prefer stories Indians care about (India launches, prices in India, Jio/Airtel,"
                 " Indian startups, global big-tech news that affects India)." if LANG == "hi" else "Audience: US/global English viewers.")
@@ -362,12 +371,58 @@ def topic_rules(niche, used):
             f"Today's preferred theme when stories are otherwise equal: {focus}.\n"
             f"{SAFE_TOPICS}\n"
             f"{TOPIC_SCORE}\n"
+            f"{requests_block()}"
             f"{goal_focus()}\n"
             f"{learned_block()}\n"
             f"Pick stories that fit the niche, are fresh today, and have the biggest audience (high searches,"
             f" points, upvotes, views; covered by several sources = bigger). Prefer stories viewers will have strong"
             f" feelings about (big brands, money, privacy, jobs, AI, new gadgets).\n"
             f"Do NOT pick these already-covered topics: {json.dumps(used, ensure_ascii=False)}")
+
+
+STORY_COOLDOWN_H, STORY_MAX = 48, 2  # one product/event: max 2 videos per 48 h (14 iPhone Duo videos in 3 days hurt)
+MIN_OUTLETS = 2  # never make a video about something fewer than 2 different news outlets report
+
+
+def recent_stories(hours=STORY_COOLDOWN_H):
+    """Videos of the last `hours` on the channel (both languages: viewers see one channel)."""
+    if not sb_on():
+        return []
+    since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        return sb_rest("GET", f"insights?select=story,topic,title&created_at=gte.{since}")
+    except Exception:
+        return []
+
+
+def story_slug(pick):
+    return slugify(pick.get("story") or pick.get("topic") or "")
+
+
+def story_count(pick, rows):
+    """How many recent videos are about the same product/event: same story tag, or (for older untagged videos)
+    a near-identical topic."""
+    slug = story_slug(pick)
+    return sum(1 for r in rows if (r.get("story") and r["story"] == slug)
+               or (not r.get("story") and repeats(pick.get("topic", ""), [r.get("topic") or ""])))
+
+
+def stories_block(rows=None):
+    """Tells the topic picker what the channel already covered and which stories are on cooldown."""
+    rows = recent_stories() if rows is None else rows
+    if not rows:
+        return ""
+    counts = {}
+    for r in rows:
+        key = r.get("story") or slugify(r.get("topic") or "")
+        counts[key] = counts.get(key, 0) + 1
+    blocked = [s for s, n in counts.items() if n >= STORY_MAX]
+    return ("RECENT STORIES on this channel (last 48 h) and their number of videos:\n"
+            + "\n".join(f"- {s}: {n}" for s, n in sorted(counts.items(), key=lambda x: -x[1])[:30])
+            + f"\nBLOCKED (already {STORY_MAX}+ videos - do not pick ANY story about the same product or event, not even"
+              f" a new angle): {', '.join(blocked) or 'none'}\n"
+              'Give every pick a "story" field: a short lowercase slug of its main product or event. Reuse the exact slug'
+              ' above when it is the same product/event (every iPhone Duo durability, price or launch story = "iphone-duo").')
 
 
 def pick_topics(trends, niche, used, n_long, n_shorts, _retry=True):
@@ -381,7 +436,7 @@ def pick_topics(trends, niche, used, n_long, n_shorts, _retry=True):
         return pick_topics(trends, niche, used, n_long, n_shorts, _retry=False)
     while len(longs) < n_long and len(shorts) > n_shorts:
         longs.append(shorts.pop())
-    return longs, shorts[:n_shorts]
+    return longs, shorts  # may include the backup Short: plan_videos stops once it has n_shorts
 
 
 def _pick_topics(trends, niche, used, n_long, n_shorts):
@@ -392,11 +447,13 @@ def _pick_topics(trends, niche, used, n_long, n_shorts):
 
 {performance_block()}
 
+{stories_block()}
+
 Pick exactly {n_long} story for a long video and exactly {n_shorts + 1} DIFFERENT stories for Shorts (all different
-from each other; the last Short is a backup). Never leave a list empty.
+from each other and about different products/events; the last Short is a backup). Never leave a list empty.
 Return JSON only:
-{{"long": [{{"topic": "short topic name", "search_query": "3-6 word news search query", "angle": "why viewers care"}}],
- "shorts": [{{"topic": "...", "search_query": "...", "angle": "..."}}]}}""", required=("long", "shorts"))
+{{"long": [{{"topic": "short topic name", "story": "product-or-event-slug", "search_query": "3-6 word news search query", "angle": "why viewers care"}}],
+ "shorts": [{{"topic": "...", "story": "...", "search_query": "...", "angle": "..."}}]}}""", required=("long", "shorts"))
 
 
 def story_context(query, n=10):
@@ -997,12 +1054,26 @@ def plan_videos(trends, niche, used, n_long, n_shorts, weekly=False):
         shorts[0] = {**longs[0], "teaser": True, "angle": (longs[0].get("angle", "") + ". TEASER: give the single most "
                      "surprising fact; around the middle say the full story is on our channel today. Keep the loop ending.")}
     chosen = []  # formats picked in this run (choose_format avoids a third use of one format today)
+    recent = recent_stories()
+    want = {"long": len(longs), "short": n_shorts}
     for kind, picks, writer in (("long", longs, write_long), ("short", shorts, write_short)):
+        made = 0
         for i, p in enumerate(picks):
+            if made >= want[kind]:
+                break
             try:
+                if story_count(p, recent) >= STORY_MAX:
+                    log(f"[{kind}] '{p['topic']}' skipped: story '{story_slug(p)}' already has {STORY_MAX}+ videos in 48 h")
+                    continue
+                n_story = len(sb_rest("GET", f"insights?select=youtube_id&story=eq.{story_slug(p)}")) if sb_on() else 0
+                p = {**p, "angle": p.get("angle", "") + series_note(n_story + 1)}
                 query = p.get("search_query") or p["topic"]
                 ctx, kw = story_context(query), keyword_research(query)
                 log(f"[{kind}] '{p['topic']}': {len(ctx)} source headlines, {len(kw)} search suggestions")
+                outlets = {c["source"] for c in ctx if c["source"]}
+                if len(outlets) < MIN_OUTLETS:  # never a video on something only one outlet (or none) reports
+                    log(f"[{kind}] '{p['topic']}' skipped: only {len(outlets)} news outlet(s) report it")
+                    continue
                 if kind == "short":
                     variant = pick_short_variant(i)
                     fmt = pick_short_format(i, chosen)
@@ -1015,9 +1086,14 @@ def plan_videos(trends, niche, used, n_long, n_shorts, weekly=False):
                                          ctx, kind)
                 meta["sources"] = sorted({c["source"] for c in ctx if c["source"]})[:8]
                 meta["search_suggestions"] = kw
+                meta["story"] = story_slug(p)
+                recent.append({"story": meta["story"], "topic": p["topic"]})  # counts for the next pick of this run
                 jobs.append((kind, meta))
+                made += 1
             except Exception as e:
                 log(f"[{kind}] script failed for '{p.get('topic')}': {e}")
+                if str(e).startswith("dropped"):
+                    remember_dropped(p.get("topic", ""))
     return jobs
 
 
@@ -2112,6 +2188,58 @@ PLAYLISTS = {"en": ("TechPulse: Daily Tech & AI News (English)", "Every TechPuls
              "hi": ("TechPulse Hindi: टेक और AI न्यूज़ हिंदी में", "TechPulse के सभी Hindi tech और AI news videos.")}
 
 
+def add_to_series(vid, story):
+    """When a story gets its 2nd video: a public "Full Story" playlist with every part, linked from the pinned
+    comment - a series gives viewers a reason to subscribe (one-off videos gave ~1 subscriber per 2,000 views)."""
+    if not story or not sb_on():
+        return None
+    try:
+        ids = [r["youtube_id"] for r in sb_rest("GET", f"insights?select=youtube_id&story=eq.{story}&order=created_at.asc")]
+        ids = [i for i in ids if i and i != vid] + [vid]
+        if len(ids) < 2:
+            return None
+        yt = youtube_client()
+        name = story.replace("-", " ").title()
+        title = f"{name} - Full Story (all updates)" if LANG == "en" else f"{name} - पूरी कहानी (सभी updates)"
+        lists, token = [], None
+        for _ in range(4):
+            page = yt.playlists().list(part="snippet", mine=True, maxResults=50, pageToken=token).execute()
+            lists += page.get("items", [])
+            token = page.get("nextPageToken")
+            if not token:
+                break
+        pid = next((p["id"] for p in lists if p["snippet"]["title"] == title), None)
+        have = set()
+        if pid:
+            have = {i["contentDetails"]["videoId"] for i in yt.playlistItems().list(
+                part="contentDetails", playlistId=pid, maxResults=50).execute().get("items", [])}
+        else:
+            pid = yt.playlists().insert(part="snippet,status", body={
+                "snippet": {"title": title[:150], "description": f"Every {CHANNEL()} update on {name}, newest first.",
+                            "defaultLanguage": LANG}, "status": {"privacyStatus": "public"}}).execute()["id"]
+        for v in [i for i in ids if i not in have]:
+            for attempt in range(4):  # 409 right after creating = not ready yet
+                try:
+                    yt.playlistItems().insert(part="snippet", body={"snippet": {
+                        "playlistId": pid, "position": 0, "resourceId": {"kind": "youtube#video", "videoId": v}}}).execute()
+                    break
+                except Exception as e:
+                    if "409" not in str(e) or attempt == 3:
+                        raise
+                    time.sleep(15 * (attempt + 1))
+        log(f"  series playlist '{title}' ({len(ids)} parts)")
+        return f"https://www.youtube.com/playlist?list={pid}"
+    except Exception as e:
+        log(f"  series playlist skipped: {str(e)[:120]}")
+        return None
+
+
+def series_note(n):
+    """Script instruction for the n-th video (n >= 2) on a story: say it is part of an ongoing series."""
+    return (f". SERIES: this is update #{n} on this story on our channel - say once, naturally, that it's part {n} and"
+            " that every part is in the full-story playlist") if n >= 2 else ""
+
+
 def add_to_playlist(vid):
     """One playlist per language: autoplay into the next video = longer sessions, which the algorithm rewards."""
     try:
@@ -2138,85 +2266,190 @@ def add_to_playlist(vid):
 
 
 REPLY_DAILY_CAP = 15     # natural volume, and keeps YouTube quota for uploads (50 units per reply)
-REPLY_SHARE = 0.65       # reply to a random ~2 of 3 valid comments (questions always get an answer)
 REPLY_MIN_AGE_MIN = 25   # wait a while like a person would, never reply within seconds
+# What happens to each type of viewer comment (see GROWTH_PLAN_OCT26.md, part B)
+ALWAYS_REPLY = {"question", "ai_callout", "fake", "correction", "request", "risky"}
+SOMETIMES_REPLY = {"opinion": 0.6, "praise": 0.5, "criticism": 0.5}  # random share: natural, not a bot on every comment
+HIDE_TYPES = {"abuse", "spam"}  # hate, insults, scams, links, self-promotion: hidden (never honest criticism)
 
 
 def reply_comments(limit=3, force=False):
-    """Reply like a person who runs the channel: only genuine comments, a random share of them, after a natural
-    delay, a few per run, capped per day. Every comment is decided once (replied or skipped) and remembered."""
+    """Every new viewer comment on every video, about once an hour: give it a type, then act - honest replies
+    (never claims to be human), fact re-check on "fake"/"wrong" (correction if the viewer is right), hide abuse and
+    spam, save viewer topic requests. Everything is stored in the comments table for the app and for learning."""
     now = datetime.datetime.now(datetime.timezone.utc)
     state = get_setting("comment_replies", {}) or {}
     last = state.get("checked")
+    yt = youtube_client()
+    apply_hide_requests(yt)  # "Hide" taps in the app
     if not force and last and now - datetime.datetime.fromisoformat(last) < datetime.timedelta(minutes=55):
-        return  # publish checks run every 10 min: look at comments about once an hour
+        return
     today = str(datetime.date.today())
     sent_today = state.get("count", 0) if state.get("date") == today else 0
-    decided = state.get("decided", [])
-    if sent_today >= REPLY_DAILY_CAP:
-        return
-    yt = youtube_client()
     me = yt.channels().list(part="id", mine=True).execute()["items"][0]["id"]
-    recent = sb_rest("GET", f"insights?select=youtube_id,title,lang&created_at=gte.{days_ago(10)}&order=views.desc&limit=8")
-    cands = []
-    for v in recent:
-        try:
-            threads = yt.commentThreads().list(part="snippet", videoId=v["youtube_id"], order="time", maxResults=20,
-                                               textFormat="plainText").execute().get("items", [])
-        except Exception:
-            continue  # private video or comments off
-        for t in threads:
+    known = {r["id"] for r in sb_rest("GET", f"comments?select=id&handled_at=gte.{days_ago(60)}")}
+    known |= set(state.get("decided", []))  # decided by the older reply logic
+    titles = {r["youtube_id"]: r for r in sb_rest("GET", "insights?select=youtube_id,title,topic,lang")}
+    cands, token = [], None
+    for _ in range(3):  # newest first, up to 300 threads: every video, not just recent ones
+        page = yt.commentThreads().list(part="snippet", allThreadsRelatedToChannelId=me, order="time", maxResults=100,
+                                        textFormat="plainText", pageToken=token).execute()
+        for t in page.get("items", []):
             top = t["snippet"]["topLevelComment"]["snippet"]
             age_min = (now - datetime.datetime.fromisoformat(top["publishedAt"].replace("Z", "+00:00"))).total_seconds() / 60
-            if (t["id"] in decided or t["snippet"].get("totalReplyCount", 0) or age_min < REPLY_MIN_AGE_MIN
-                    or top.get("authorChannelId", {}).get("value") == me):
+            if (t["id"] in known or top.get("authorChannelId", {}).get("value") == me or age_min < REPLY_MIN_AGE_MIN
+                    or age_min > 60 * 24 * 30):
                 continue
-            cands.append({"id": t["id"], "video": v["title"], "lang": v["lang"], "text": top["textDisplay"][:400]})
+            v = titles.get(top["videoId"], {})
+            cands.append({"id": t["id"], "video_id": top["videoId"], "video": v.get("title", ""), "topic": v.get("topic", ""),
+                          "lang": v.get("lang", "en"), "text": top["textDisplay"][:400], "at": top["publishedAt"],
+                          "answered": t["snippet"].get("totalReplyCount", 0) > 0})
+        token = page.get("nextPageToken")
+        if not token:
+            break
     sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates",
             json={"key": "comment_replies", "value": {**state, "checked": now.isoformat()}})
     if not cands:
         return
-    cands = cands[:15]
-    res = llm_json(f"""You run the YouTube channel {CHANNEL()} (tech & AI news) and you are answering comments yourself.
-For each comment decide:
-- "valid": false for spam, self-promotion, links, bots, hate, insults, gibberish, or anything off-topic or needing no answer.
-  Also false if the person asks whether replies are automated or written by AI (never claim to be human).
-- "question": true if the commenter asks something.
-- "reply": for valid comments, a reply that reads like a real person typing on a phone:
-  short (usually 4-20 words), casual, specific to what THEY said, in the SAME language and script as the comment
-  (Hinglish comment -> Hinglish reply). Vary the style between replies: sometimes lowercase, sometimes no punctuation
-  at the end, at most one emoji and only sometimes. Never start with "Great question", "Thanks for your comment",
-  "Absolutely" or similar stock phrases; no hashtags, no links, no "subscribe" requests, no corporate tone.
-  Only facts from the video topic; if unsure, say so honestly or ask their opinion. Never promise anything.
-
+    cands = cands[:20]
+    res = llm_json(f"""You run the YouTube channel {CHANNEL()} (AI-made tech & AI news Shorts; voice and visuals are AI,
+facts come from the news sources listed in each description). Sort each viewer comment and draft a reply.
+TYPES: question, ai_callout (says it is AI / AI slop / bot), fake (says the news is fake or wrong without details),
+correction (points out a specific fact we got wrong), request (asks for a video on a topic), risky (wants piracy,
+mods, cracks or anything unsafe), opinion, praise, criticism (boring, bad voice, too many videos...), abuse (insults,
+hate, harassment), spam (links, self-promotion, scams, bots), emoji (only emoji or one word).
+REPLY RULES: short (4-25 words), casual, specific to what THEY said, same language and script as the comment
+(Hinglish -> Hinglish). Every reply in this batch must use DIFFERENT wording and sentence shape (no two replies alike); sometimes lowercase; at most one emoji. Never claim to be human, never say
+"our team", never argue, no links, no "subscribe" requests, no stock phrases like "Great question".
+- ai_callout: agree honestly ("yep, it's AI-made") and point to the sources in the description; invite them to say
+  if a fact looks wrong.
+- fake: calm, name that the story comes from the news outlets listed in the description.
+- question: answer only from the video topic, or say honestly you're not sure yet.
+- risky: friendly warning about the risk, never instructions.
+- request: thank them and say it's noted.
+- abuse, spam, emoji: reply "".
+Also give "sentiment" (positive/neutral/negative) and for "request" the requested "request_topic".
 COMMENTS:
-{json.dumps(cands, ensure_ascii=False, indent=1)}
-
-Return JSON only: {{"replies": [{{"id": "comment thread id", "valid": true, "question": false, "reply": "text"}}]}}""",
-                   required=("replies",))
-    picks = []
-    for r in res.get("replies", []):
-        if r.get("id") not in {c["id"] for c in cands}:
+{json.dumps([{k: c[k] for k in ("id", "video", "text")} for c in cands], ensure_ascii=False, indent=1)}
+Return JSON only: {{"comments": [{{"id": "...", "type": "...", "sentiment": "...", "reply": "...", "request_topic": ""}}]}}""",
+                   required=("comments",))
+    by_id = {c["id"]: c for c in cands}
+    rows, replies = [], []
+    for r in res.get("comments", []):
+        c = by_id.get(r.get("id"))
+        if not c:
             continue
-        decided.append(r["id"])
-        text = (r.get("reply") or "").strip()
-        if r.get("valid") and text and (r.get("question") or random.random() < REPLY_SHARE):
-            picks.append((r["id"], text[:300]))
-    random.shuffle(picks)
+        kind, text = (r.get("type") or "opinion").strip().lower(), (r.get("reply") or "").strip()[:300]
+        row = {"id": c["id"], "video_id": c["video_id"], "video_title": c["video"][:200], "lang": c["lang"],
+               "text": c["text"], "type": kind, "sentiment": r.get("sentiment") or "neutral", "action": "skipped",
+               "reply": None, "needs_you": False, "commented_at": c["at"], "handled_at": now.isoformat()}
+        if kind in HIDE_TYPES:
+            try:
+                yt.comments().setModerationStatus(id=c["id"], moderationStatus="rejected").execute()
+                row["action"] = "hidden"
+            except Exception as e:
+                row.update(action="flagged", needs_you=True)
+                log(f"  hide failed: {str(e)[:100]}")
+        elif kind in ("fake", "correction"):
+            check = recheck_video(c)
+            if check.get("verdict") == "viewer_right" and check.get("correction"):
+                text = check.get("reply") or text
+                add_correction(yt, c["video_id"], check["correction"])
+                save_lesson(f"Viewers corrected: {check['correction']} (video '{c['video'][:60]}')")
+                row["action"] = "corrected"
+            elif check.get("verdict") == "unsure":
+                row["needs_you"] = True  # shown in the app: a person should look
+        elif kind == "request" and r.get("request_topic"):
+            add_topic_request(r["request_topic"], c["lang"])
+        if text and not c["answered"] and (kind in ALWAYS_REPLY or random.random() < SOMETIMES_REPLY.get(kind, 0)):
+            replies.append((row, text))
+        rows.append(row)
+    random.shuffle(replies)
+    replies.sort(key=lambda x: x[0]["type"] not in ALWAYS_REPLY)  # important ones first
     sent = 0
-    for cid, text in picks[:min(limit, REPLY_DAILY_CAP - sent_today)]:
+    for row, text in replies[:max(0, min(limit + 2, REPLY_DAILY_CAP - sent_today))]:
         try:
             if sent:
-                time.sleep(random.uniform(20, 90))  # not a burst of replies in the same second
-            yt.comments().insert(part="snippet", body={"snippet": {"parentId": cid, "textOriginal": text}}).execute()
+                time.sleep(random.uniform(20, 75))  # not a burst of replies in the same second
+            yt.comments().insert(part="snippet", body={"snippet": {"parentId": row["id"], "textOriginal": text}}).execute()
+            row.update(reply=text, action=row["action"] if row["action"] == "corrected" else "replied")
             sent += 1
         except Exception as e:
             log(f"  reply failed: {str(e)[:100]}")
-    # Valid comments not picked this time stay decided (skipped), so the pick stays random instead of eventually all.
-    value = {"date": today, "count": sent_today + sent, "decided": decided[-500:], "checked": now.isoformat()}
+    if rows:
+        sb_rest("POST", "comments?on_conflict=id", prefer="resolution=merge-duplicates", json=rows)
+    value = {"date": today, "count": sent_today + sent, "checked": now.isoformat()}
     sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates",
             json={"key": "comment_replies", "value": value})
-    log(f"comments: {len(cands)} new, {len(picks)} picked, {sent} replied ({sent_today + sent}/{REPLY_DAILY_CAP} today)")
+    types = {}
+    for row in rows:
+        types[row["type"]] = types.get(row["type"], 0) + 1
+    log(f"comments: {len(rows)} new {types}, {sent} replied ({sent_today + sent}/{REPLY_DAILY_CAP} today), "
+        f"{sum(r['action'] == 'hidden' for r in rows)} hidden, {sum(r['needs_you'] for r in rows)} need you")
+
+
+def recheck_video(c):
+    """A viewer says the video is fake or wrong: compare their claim with our description and fresh headlines."""
+    try:
+        desc = (sb_rest("GET", f"videos?select=description&youtube_id=eq.{c['video_id']}") or [{}])[0].get("description") or ""
+        ctx = story_context(c.get("topic") or c["video"], n=10)
+        return llm_json(f"""A viewer commented on our news Short "{c['video']}": "{c['text']}"
+OUR VIDEO DESCRIPTION (what the video said, plus its sources):
+{desc[:2500]}
+FRESH NEWS HEADLINES on the topic:
+{json.dumps(ctx, ensure_ascii=False)[:3000]}
+Did the viewer point out a REAL error in our video? Be strict and fair.
+- "viewer_right": the headlines clearly support the viewer and contradict our video
+- "video_right": the headlines support our video
+- "unsure": cannot tell from these headlines
+If viewer_right: "correction" = one plain sentence with the correct fact; "reply" = short thanks + the correction in
+the comment's language (never claim to be human). Otherwise "correction" = "" and "reply" = "".
+Return JSON only: {{"verdict": "...", "correction": "...", "reply": "..."}}""", required=("verdict",))
+    except Exception as e:
+        log(f"  re-check failed: {str(e)[:100]}")
+        return {"verdict": "unsure"}
+
+
+def add_correction(yt, vid, correction):
+    """Puts the correction at the top of the video's description (pinning comments is not possible via the API)."""
+    try:
+        snip = yt.videos().list(part="snippet", id=vid).execute()["items"][0]["snippet"]
+        if "Correction:" in snip.get("description", ""):
+            return
+        body = {k: snip[k] for k in ("title", "description", "tags", "categoryId", "defaultLanguage",
+                                     "defaultAudioLanguage") if k in snip}
+        body["description"] = f"Correction: {correction[:300]}\n\n" + snip.get("description", "")
+        yt.videos().update(part="snippet", body={"id": vid, "snippet": body}).execute()
+        log(f"  correction added to {vid}")
+    except Exception as e:
+        log(f"  correction not added: {str(e)[:100]}")
+
+
+def save_lesson(text):
+    """Viewer feedback the script writer must respect from now on (shown to the writer by learned_block)."""
+    lessons = (get_setting("comment_lessons", []) or [])[-29:] + [{"text": text[:300], "at": str(datetime.date.today())}]
+    sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates",
+            json={"key": "comment_lessons", "value": lessons})
+
+
+def add_topic_request(topic, lang):
+    """A viewer asked for a video on this: the topic picker prefers it for 7 days (if news outlets cover it)."""
+    week_ago = str(datetime.date.today() - datetime.timedelta(days=7))
+    reqs = [r for r in (get_setting("topic_requests", []) or []) if r.get("at", "") >= week_ago]
+    if not any(repeats(topic, [r["topic"]]) for r in reqs):
+        reqs.append({"topic": topic[:100], "lang": lang, "at": str(datetime.date.today())})
+    sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates",
+            json={"key": "topic_requests", "value": reqs[-30:]})
+
+
+def apply_hide_requests(yt):
+    """Comments the owner tapped "Hide" on in the app."""
+    for r in sb_rest("GET", "comments?select=id&hide_requested=eq.true&action=neq.hidden"):
+        try:
+            yt.comments().setModerationStatus(id=r["id"], moderationStatus="rejected").execute()
+            sb_rest("PATCH", f"comments?id=eq.{r['id']}", json={"action": "hidden"})
+        except Exception as e:
+            log(f"  hide failed: {str(e)[:100]}")
 
 
 def upload_existing(work):
@@ -2294,12 +2527,24 @@ def repeats(topic, recent):
     return bool(a) and any(len(a & key(r)) >= max(1, round(0.6 * min(len(a), len(key(r)) or 1))) for r in recent)
 
 
+def remember_dropped(topic):
+    """A topic dropped for safety or failed fact-checks is kept out of planning for 3 days."""
+    if not sb_on():
+        return
+    st = [d for d in (get_setting("dropped_topics", []) or []) if d.get("at", "") >= days_ago(3)]
+    st.append({"topic": topic, "at": datetime.datetime.now(datetime.timezone.utc).isoformat()})
+    sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates",
+            json={"key": "dropped_topics", "value": st[-50:]})
+
+
 def used_topics():
     if sb_on():
         since = days_ago(14)
-        # oldest first, so callers' used[-40:] really is the most recent 40 (unordered rows let repeats slip through)
+        # oldest first, so callers' used[-40:] really is the most recent 40 (unordered rows let repeats slip through);
+        # topics dropped for safety / fact-check in the last 3 days come last so they count as recent
+        dropped = [d["topic"] for d in (get_setting("dropped_topics", []) or []) if d.get("at", "") >= days_ago(3)]
         return [r["topic"] for r in sb_rest("GET", f"videos?select=topic&lang=eq.{LANG}&created_at=gte.{since}"
-                                                    "&order=created_at.asc") if r.get("topic")]
+                                                    "&order=created_at.asc") if r.get("topic")] + dropped
     history = json.loads(HISTORY.read_text(encoding="utf-8")) if HISTORY.exists() else []
     return [h["topic"] for h in history[-80:] if h.get("topic")]
 
@@ -2329,7 +2574,7 @@ def record(work, kind, meta, desc, duration, vid, thumb):
         sb_rest("POST", "insights", prefer="return=representation,resolution=merge-duplicates", json={"youtube_id": vid, "lang": LANG, "kind": kind, "topic": meta["topic"], "title": meta["title"],
                       "variant": meta.get("variant") or ("weekly" if meta.get("weekly") else None),
                       "format": meta.get("format"), "followup_of": meta.get("followup_of"),
-                      "script_score": meta.get("script_score")})
+                      "script_score": meta.get("script_score"), "story": meta.get("story")})
     try:  # app preview files are a convenience: a failure here must not lose the record above
         paths = {"preview_path": sb_upload(make_preview(work, kind), f"{prefix}/preview.mp4", "video/mp4")}
         if thumb:
@@ -2374,7 +2619,13 @@ def update_stats(full=True):
     """Refresh views/likes/comments for the last ~6 months (insights) and the app's 7-day list (videos).
     One channel for all languages, so one batched API call per 50 videos (1 quota unit each)."""
     since = days_ago(180 if full else 7)
-    ids = {r["youtube_id"] for r in sb_rest("GET", f"insights?select=youtube_id&created_at=gte.{since}")}
+    rows = sb_rest("GET", f"insights?select=youtube_id,created_at,views_24h&created_at=gte.{since}")
+    ids = {r["youtube_id"] for r in rows}
+    # views at 24 h old: the fair way to compare videos (an older video always has more views, a newer one more
+    # views/hour). Saved once, when a video is 24-30 h old; older videos stay empty rather than skew the numbers.
+    nowdt = datetime.datetime.now(datetime.timezone.utc)
+    snap = {r["youtube_id"] for r in rows if r.get("views_24h") is None and datetime.timedelta(hours=24)
+            <= nowdt - datetime.datetime.fromisoformat(r["created_at"].replace("Z", "+00:00")) < datetime.timedelta(hours=30)}
     ids |= {r["youtube_id"] for r in sb_rest("GET", "videos?select=youtube_id&youtube_id=not.is.null")}
     ids = sorted(ids)
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -2394,7 +2645,8 @@ def update_stats(full=True):
             st = {k: int(s.get(k, 0)) for k in ("viewCount", "likeCount", "commentCount")}
             sb_rest("PATCH", f"videos?youtube_id=eq.{v['id']}", json={"privacy": v["status"]["privacyStatus"], "stats": st})
             sb_rest("PATCH", f"insights?youtube_id=eq.{v['id']}", json={
-                "views": st["viewCount"], "likes": st["likeCount"], "comments": st["commentCount"], "updated_at": now})
+                "views": st["viewCount"], "likes": st["likeCount"], "comments": st["commentCount"], "updated_at": now,
+                **({"views_24h": st["viewCount"]} if v["id"] in snap else {})})
     log(f"stats updated for {len(ids)} videos")
     save_channel_stats()  # 1 quota unit: keeps the app's subscriber/view tiles fresh every 10 minutes
     try:
@@ -2475,7 +2727,7 @@ def factory_busy(token, repo):
     return False
 
 
-FOLLOWUPS_PER_WINNER, FOLLOWUPS_PER_DAY, FOLLOWUP_GAP_H = 2, 5, 6
+FOLLOWUPS_PER_WINNER, FOLLOWUPS_PER_DAY, FOLLOWUP_GAP_H = 1, 3, 6  # was 2/5: part 2s piled onto one story
 
 
 def double_down():
@@ -2490,6 +2742,7 @@ def double_down():
     if made_today >= FOLLOWUPS_PER_DAY:
         return
     queued = []
+    recent = recent_stories()
     for lang in LANGS:
         base = [r["vph"] for r in scored_videos(lang, days=14) if r["kind"] == "short"]
         if len(base) < 5:
@@ -2506,6 +2759,8 @@ def double_down():
                 continue
             if sb_rest("GET", f"run_requests?select=id&followup=eq.{vid}&status=in.(pending,starting)"):
                 continue  # already queued (another job saw it first)
+            if story_count({"topic": r.get("topic") or r["title"], "story": r.get("story")}, recent) >= STORY_MAX:
+                continue  # story on cooldown: a part 2 would be the 3rd+ video on it in 48 h
             done[vid] = times + [now.isoformat()]
             made_today += 1
             # save the decision before queueing, so a parallel job does not queue the same part 2
@@ -2535,6 +2790,7 @@ def _plan_viral(trends, niche, used):
     names = VIRAL_FORMATS[LANG]
     fmt_name = choose_format(names)
     rejected = []
+    recent = recent_stories()
     for attempt in range(4):
         shown = trends[:60] if not rejected else random.sample(trends[:80], min(60, len(trends[:80])))
         avoid = (f"\nREJECTED just now as repeats of recent videos: {json.dumps(rejected, ensure_ascii=False)}. Pick a "
@@ -2547,30 +2803,38 @@ news articles cover, so the facts can be sourced. Prefer famous brands and thing
 Trending now (for inspiration):
 {trends_text(shown)}
 Already covered recently (do not repeat): {json.dumps(used[-40:], ensure_ascii=False)}{avoid}
+{stories_block(recent)}
 {TOPIC_SCORE}
 {SAFE_TOPICS}
-Return JSON only: {{"topic": "short name", "search_query": "3-6 word news search query", "angle": "the hook"}}""",
+Return JSON only: {{"topic": "short name", "story": "product-or-event-slug", "search_query": "3-6 word news search query", "angle": "the hook"}}""",
                         required=("topic", "search_query"))
         # a real repeat is never accepted (3 Hindi "Chrome update" Shorts got ~25 views each); if all 4 tries repeat,
         # the run fails and the clock retries the slot later with fresh trends
-        if repeats(pick["topic"], used[-15:]):
-            log(f"viral: '{pick['topic']}' repeats a recent video, trying another subject")
+        if repeats(pick["topic"], used[-15:]) or story_count(pick, recent) >= STORY_MAX:
+            log(f"viral: '{pick['topic']}' repeats a recent video or story, trying another subject")
             rejected.append(pick["topic"])
             used = used + [pick["topic"]]
             continue
         ctx = story_context(pick["search_query"], n=10)
-        if len(ctx) >= 2:
+        if len({c["source"] for c in ctx if c["source"]}) >= MIN_OUTLETS:
             break
-        log(f"viral: '{pick['topic']}' has too few sources, trying another subject")
+        log(f"viral: '{pick['topic']}' has too few news outlets, trying another subject")
         used = used + [pick["topic"]]
     else:  # no usable subject: fail the run so the clock retries the slot later instead of losing it
         raise RuntimeError("no subject with enough sources")
     kw = keyword_research(pick["search_query"])
     variant = "fast" if fmt_name in FAST_FORMATS else "core"
-    meta = write_checked(lambda note: write_short({**pick, "angle": pick.get("angle", "") + note}, ctx, kw, variant,
-                                                  fmt_name), ctx, "short")
+    n_story = len(sb_rest("GET", f"insights?select=youtube_id&story=eq.{story_slug(pick)}")) if sb_on() else 0
+    pick = {**pick, "angle": pick.get("angle", "") + series_note(n_story + 1)}
+    try:
+        meta = write_checked(lambda note: write_short({**pick, "angle": pick.get("angle", "") + note}, ctx, kw, variant,
+                                                      fmt_name), ctx, "short")
+    except RuntimeError as e:
+        if str(e).startswith("dropped"):
+            remember_dropped(pick["topic"])  # the clock's retry must pick a different subject, not the same one
+        raise
     meta.update({"variant": variant, "sources": sorted({c["source"] for c in ctx if c["source"]})[:8],
-                 "search_suggestions": kw})
+                 "search_suggestions": kw, "story": story_slug(pick)})
     log(f"viral: {fmt_name} - '{pick['topic']}' ({len(ctx)} sources)")
     return [("short", meta)]
 
@@ -2585,15 +2849,18 @@ def plan_followup(vid):
             return []
 
     def _planner(trends, niche, used):
-        rows = sb_rest("GET", f"insights?select=title,topic,lang&youtube_id=eq.{vid}")
+        rows = sb_rest("GET", f"insights?select=title,topic,lang,story&youtube_id=eq.{vid}")
         if not rows or not rows[0].get("topic"):
             log(f"follow-up: {vid} not found")
             return []
         orig = rows[0]
+        if story_count({"topic": orig["topic"], "story": orig.get("story")}, recent_stories()) >= STORY_MAX:
+            log(f"follow-up: story of '{orig['title']}' already has {STORY_MAX}+ videos in 48 h, skipping")
+            return []
         part = 2 + len(sb_rest("GET", f"insights?select=youtube_id&followup_of=eq.{vid}"))
         ctx = story_context(orig["topic"])
-        if not ctx:
-            log(f"follow-up: no fresh sources for '{orig['topic']}'")
+        if len({c["source"] for c in ctx if c["source"]}) < MIN_OUTLETS:
+            log(f"follow-up: not enough news outlets for '{orig['topic']}'")
             return []
         kw = keyword_research(orig["topic"])
         pick = {"topic": orig["topic"], "angle": (
@@ -2606,7 +2873,7 @@ def plan_followup(vid):
         meta = write_checked(lambda note: write_short({**pick, "angle": pick["angle"] + note}, ctx, kw, variant, fmt),
                              ctx, "short")
         meta.update({"variant": variant, "followup_of": vid, "sources": sorted({c["source"] for c in ctx if c["source"]})[:8],
-                     "search_suggestions": kw})
+                     "search_suggestions": kw, "story": orig.get("story") or slugify(orig["topic"])})
         log(f"follow-up: part {part} of '{orig['title']}'")
         return [("short", meta)]
     return planner
@@ -2810,7 +3077,7 @@ def views_per_hour(r):
 
 def scored_videos(lang=None, days=30, min_hours=6):
     """Recent videos (online >= min_hours) ranked by views per hour, with % watched when known."""
-    q = (f"insights?select=youtube_id,kind,lang,title,variant,format,followup_of,views,likes,avg_view_pct,created_at&created_at=gte.{days_ago(days)}"
+    q = (f"insights?select=youtube_id,kind,lang,title,topic,story,variant,format,followup_of,views,likes,avg_view_pct,views_24h,created_at&created_at=gte.{days_ago(days)}"
          f"&created_at=lt.{(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=min_hours)).strftime('%Y-%m-%dT%H:%M:%SZ')}")
     if lang:
         q += f"&lang=eq.{lang}"
@@ -2855,7 +3122,28 @@ def market_block():
 def learned_block():
     lr = get_setting("learned_rules", {}) or {}
     rules = lr.get("rules") or []
+    # facts viewers corrected (from comments): never repeat those mistakes
+    rules += [x["text"] for x in (get_setting("comment_lessons", []) or [])[-8:] if isinstance(x, dict)]
     return ("LESSONS THIS CHANNEL HAS LEARNED (follow them):\n" + "\n".join(f"- {x}" for x in rules)) if rules else ""
+
+
+def viewer_feedback():
+    """What viewers said in the last 14 days, per format: fed to the daily learning so comments shape the videos."""
+    try:
+        rows = sb_rest("GET", f"comments?select=video_id,type,sentiment,text&handled_at=gte.{days_ago(14)}")
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+    fmt = {r["youtube_id"]: r.get("format") or r.get("kind") for r in sb_rest("GET", f"insights?select=youtube_id,format,kind"
+                                                                             f"&created_at=gte.{days_ago(30)}")}
+    counts = {}
+    for r in rows:
+        key = f"{fmt.get(r['video_id'], '?')}:{r['type']}"
+        counts[key] = counts.get(key, 0) + 1
+    critic = [r["text"][:120] for r in rows if r["type"] in ("criticism", "ai_callout", "fake", "correction")][:12]
+    return ("VIEWER COMMENTS (last 14 days), format:type -> count: " + json.dumps(counts) + "\n"
+            "Recent critical comments: " + json.dumps(critic, ensure_ascii=False))
 
 
 def learn_rules():
@@ -2885,8 +3173,11 @@ Our videos, best first (views per hour since upload is the main score; % watched
 
 {chr(10).join(market)}
 
+{viewer_feedback()}
+
 Find what separates our winners from our losers (topics, brands, title wording, length/format, language) and what
-the market rewards right now. Write 6-8 SHORT, concrete, actionable rules for choosing stories and writing titles and
+the market rewards right now. If viewers complain about something repeatedly (e.g. "AI slop", repeated topics,
+wrong facts, the voice), include a rule that fixes it. Write 6-8 SHORT, concrete, actionable rules for choosing stories and writing titles and
 scripts (e.g. "Titles naming Apple or Samsung get ~3x views/hour: put the brand first"). Only rules the data supports.
 The mix of long videos and Shorts is fixed by the channel goals (long videos earn the watch hours needed for
 monetization): never tell us to stop or reduce a format - instead give rules that make weak formats perform better.
@@ -2985,6 +3276,8 @@ def upload_room(reserve=0):
     """Free uploads in YouTube's rolling 24 h channel limit (setting 'upload_cap' can raise it as the channel grows),
     minus `reserve` kept back for higher-priority videos (long videos, viral formats, breaking news, part 2s)."""
     cap = int(get_setting("upload_cap", CHANNEL_UPLOAD_CAP) or CHANNEL_UPLOAD_CAP)
+    # what YouTube allows (cap) vs what we choose to post (target, set by volume_check): never more than either
+    cap = min(cap, int(get_setting("upload_target", UPLOAD_TARGET) or UPLOAD_TARGET))
     return cap - channel_uploads_24h() - reserve
 
 
@@ -3030,9 +3323,10 @@ def note_upload_limit(count, ok):
 
 
 def volume_check():
-    """Once a day: does the extra volume still pay? Compares the median views/hour of Shorts from the last 2 days with
-    those from 3-9 days ago. Views per Short fall >40% -> brake (cap -2, no growth today). Views hold (>=85%) and the
-    cap has reached the target -> raise the target by 2 (max UPLOAD_MAX), at most once a week. Fully automatic."""
+    """Once a day: does the extra volume still pay? Compares the median views each Short had at 24 h old (fair:
+    same age) for Shorts from the last 4 days vs the 7 days before. Falls >25% -> brake: target -2 (min 10), no
+    growth today. Holds or improves (>=100%) at the target -> target +2 (max UPLOAD_MAX), at most once a week.
+    (The old views/hour comparison favoured newer videos and raised volume while real reach per video fell.)"""
     if not sb_on():
         return
     today = str(datetime.date.today())
@@ -3041,23 +3335,24 @@ def volume_check():
         return
     upsert = lambda key, value: sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates",
                                         json={"key": key, "value": value})
-    rows = [r for r in scored_videos(days=9) if r["kind"] == "short"]
-    cut = days_ago(2)
-    recent = sorted(r["vph"] for r in rows if r["created_at"] >= cut)
-    base = sorted(r["vph"] for r in rows if r["created_at"] < cut and r["created_at"] >= days_ago(9))
-    st = {**st, "date": today}
+    rows = [r for r in scored_videos(days=11, min_hours=24) if r["kind"] == "short" and r.get("views_24h") is not None]
+    cut = days_ago(4)
+    recent = sorted(r["views_24h"] for r in rows if r["created_at"] >= cut)
+    base = sorted(r["views_24h"] for r in rows if r["created_at"] < cut)
+    st = {k: v for k, v in st.items() if k in ("target_raised",)} | {"date": today}
     if len(recent) < 6 or len(base) < 6:
-        upsert("volume", {**st, "note": f"not enough data ({len(recent)} new / {len(base)} older Shorts)"})
+        upsert("volume", {**st, "note": f"collecting fair 24-hour numbers ({len(recent)} new / {len(base)} older Shorts"
+                                        " so far); volume stays as it is"})
         return
     med = lambda v: v[len(v) // 2]
-    ratio = round(med(recent) / max(med(base), 0.01), 2)
-    cap = int(get_setting("upload_cap", CHANNEL_UPLOAD_CAP) or CHANNEL_UPLOAD_CAP)
+    ratio = round(med(recent) / max(med(base), 1), 2)
     target = int(get_setting("upload_target", UPLOAD_TARGET) or UPLOAD_TARGET)
-    st.update(ratio=ratio, note=f"views/hour per new Short = {ratio:.0%} of the week before")
-    if ratio < 0.6:
-        upsert("upload_cap", max(CHANNEL_UPLOAD_CAP - 1, cap - 2))
-        st.update(braked=today, note=st["note"] + f" -> brake: cap {cap} -> {max(CHANNEL_UPLOAD_CAP - 1, cap - 2)}")
-    elif ratio >= 0.85 and cap >= target and target < UPLOAD_MAX and st.get("target_raised", "") <= days_ago(7)[:10]:
+    cap = int(get_setting("upload_cap", CHANNEL_UPLOAD_CAP) or CHANNEL_UPLOAD_CAP)
+    st.update(ratio=ratio, note=f"views per Short at 24 h: {med(recent)} now vs {med(base)} before ({ratio:.0%})")
+    if ratio < 0.75:
+        upsert("upload_target", max(10, target - 2))
+        st.update(braked=today, note=st["note"] + f" -> brake: target {target} -> {max(10, target - 2)}")
+    elif ratio >= 1.0 and cap >= target and target < UPLOAD_MAX and st.get("target_raised", "") <= days_ago(7)[:10]:
         upsert("upload_target", min(UPLOAD_MAX, target + 2))
         st.update(target_raised=today, note=st["note"] + f" -> target {target} -> {min(UPLOAD_MAX, target + 2)}")
     upsert("volume", st)
@@ -3091,8 +3386,11 @@ Return JSON only: {{"breaking": false}} or
         log("breaking: nothing big enough right now")
         return []
     ctx = story_context(pick.get("search_query") or pick["topic"])
-    if len(ctx) < 3:  # not confirmed by enough outlets yet
-        log(f"breaking: '{pick['topic']}' has only {len(ctx)} sources, skipping")
+    if len({c["source"] for c in ctx if c["source"]}) < 3:  # not confirmed by enough different outlets yet
+        log(f"breaking: '{pick['topic']}' has fewer than 3 news outlets, skipping")
+        return []
+    if story_count(pick, recent_stories()) >= STORY_MAX:
+        log(f"breaking: story of '{pick['topic']}' already has {STORY_MAX}+ videos in 48 h, skipping")
         return []
     log(f"breaking: '{pick['topic']}' ({len(ctx)} sources)")
     kw = keyword_research(pick.get("search_query") or pick["topic"])
@@ -3100,7 +3398,7 @@ Return JSON only: {{"breaking": false}} or
                                                    "the last few hours: open with what just happened." + note}, ctx, kw,
                                                   "fast", "hot_take"), ctx, "short")
     meta.update({"variant": "breaking", "sources": sorted({c["source"] for c in ctx if c["source"]})[:8],
-                 "search_suggestions": kw})
+                 "search_suggestions": kw, "story": story_slug(pick)})
     return [("short", meta)]
 
 
@@ -3243,6 +3541,9 @@ def _run_videos(args, planner, note):
                 comment = meta.get("pinned_comment")
                 if comment and meta.get("related_url") and kind == "long":
                     comment += f"\n\n{L()['text']['full_story']} {meta['related_url']}"
+                series = add_to_series(vid, meta.get("story")) if privacy == "public" else None
+                if comment and series:
+                    comment += f"\n\n▶ {'All parts' if LANG == 'en' else 'सभी parts'}: {series}"
                 after_upload(vid, thumb, comment if privacy == "public" else None)
                 if kind == "long" and privacy == "public":
                     LATEST_LONG[LANG] = f"https://youtu.be/{vid}"

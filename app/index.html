@@ -167,6 +167,7 @@
     <section id="tab-videos" hidden></section>
     <section id="tab-insights" hidden></section>
     <section id="tab-auto" hidden></section>
+    <section id="tab-comments" hidden></section>
     <section id="tab-more" hidden>
       <div class="panel">
         <h2>Appearance</h2>
@@ -224,7 +225,8 @@
     <button data-tab="home" class="on">Home</button>
     <button data-tab="videos">Videos</button>
     <button data-tab="insights">Insights</button>
-    <button data-tab="auto">Automation</button>
+    <button data-tab="comments">Comments</button>
+    <button data-tab="auto">Auto</button>
     <button data-tab="more">More</button>
   </nav>
 </div>
@@ -290,7 +292,7 @@ function vstate(v) {
 }
 
 async function loadAll() {
-  const [videos, insights, stats, runs, settings, requests, slots] = await Promise.all([
+  const [videos, insights, stats, runs, settings, requests, slots, comments] = await Promise.all([
     db.from("videos").select("*").order("created_at", { ascending: false }),
     db.from("insights").select("*").order("created_at", { ascending: false }).limit(1000),
     db.from("channel_stats").select("*").order("day", { ascending: true }).limit(400),
@@ -298,9 +300,11 @@ async function loadAll() {
     db.from("settings").select("*"),
     db.from("run_requests").select("*").order("created_at", { ascending: false }).limit(6),
     db.from("slot_log").select("*").gte("updated_at", new Date(Date.now() - 50 * 3600000).toISOString()).limit(300),
+    db.from("comments").select("*").gte("handled_at", new Date(Date.now() - 30 * 86400000).toISOString())
+      .order("commented_at", { ascending: false }).limit(300),
   ]);
   const err = [videos, insights, stats, runs, settings, requests].find(r => r.error);
-  S.slots = slots.data || [];
+  S.slots = slots.data || []; S.comments = comments.data || [];
   if (err) toast("Error: " + err.error.message);
   S.videos = videos.data || []; S.insights = insights.data || []; S.stats = stats.data || [];
   S.runs = runs.data || []; S.requests = requests.data || [];
@@ -311,7 +315,7 @@ async function loadAll() {
     const { data: urls } = await db.storage.from("videos").createSignedUrls(paths, 3600);
     (urls || []).forEach(u => { if (u.signedUrl) S.thumbs[u.path] = u.signedUrl; });
   }
-  renderHome(); renderVideos(); renderInsights(); renderAuto(); renderAffiliate(); renderYtLogin();
+  renderHome(); renderVideos(); renderInsights(); renderAuto(); renderAffiliate(); renderYtLogin(); renderComments();
 }
 
 // ---------- Home ----------
@@ -403,6 +407,7 @@ function renderHome() {
   if (expired.length) banner = `<div class="banner bad"><span class="dot"></span><div><b>YouTube login expired</b>Uploads for ${expired.map(p => p === 2 ? "Hindi (project 2)" : "English (project 1)").join(" and ")} ${expired.length === 2 ? "are stopped" : "continue through the other project's login"}. To fix: More → YouTube login → Log in. Takes 1 minute; the cloud picks it up by itself.</div></div>`;
   else if (bad.length) banner = `<div class="banner bad"><span class="dot"></span><div><b>Safety pause on</b>YouTube rejected or removed ${bad.length} video(s) recently, so new uploads stay private for 14 days. Check YouTube Studio for any warning.</div></div>`;
   else if (paused) banner = `<div class="banner warn"><span class="dot"></span><div><b>Automation paused</b>No new videos are made until you switch it back on in Automation.</div></div>`;
+  else if ((S.comments || []).some(c => c.needs_you && c.action !== "hidden")) banner = `<div class="banner warn"><span class="dot"></span><div><b>Comments need you</b>Some viewer comments could not be checked automatically. Open the Comments tab.</div></div>`;
   else banner = `<div class="banner good"><span class="dot"></span><div><b>All systems running</b>${autopub ? "Videos publish automatically after the fact and safety check." : "Auto-publish is off: new videos upload as private for you to review."}</div></div>`;
   const goal = (n, target, label) => `<div class="progress"><div class="lbl"><span>${label}</span><span class="muted">${full(n)} / ${full(target)}</span></div>
     <div class="bar" role="progressbar" aria-valuenow="${n}" aria-valuemax="${target}"><i style="width:${Math.min(100, n / target * 100)}%"></i></div></div>`;
@@ -664,6 +669,56 @@ $("#affSave").onclick = async () => {
   if (inn && !/-21$/.test(inn) && !confirm("India tracking IDs usually end in -21. Save anyway?")) return;
   if (await setSetting("affiliate", { us, in: inn })) { renderAffiliate(); toast("Saved. Links start on the next product video."); }
 };
+// ---------- Comments: what viewers said, what the automation did, health score ----------
+const CTYPE = { question: "Question", ai_callout: "Says it's AI", fake: "Says fake", correction: "Correction",
+  request: "Topic request", risky: "Risky", opinion: "Opinion", praise: "Praise", criticism: "Criticism",
+  abuse: "Abuse", spam: "Spam", emoji: "Emoji" };
+const CACTION = { replied: ["REPLIED", "b-public"], corrected: ["CORRECTED", "b-public"], hidden: ["HIDDEN", "b-private"],
+  skipped: ["NO REPLY", "b-private"], flagged: ["NEEDS YOU", "b-held"] };
+function renderComments() {
+  const all = S.comments || [], f = S.cfilter || "all";
+  const week = all.filter(c => new Date(c.commented_at || c.handled_at) > new Date(Date.now() - 7 * 86400000));
+  const n = s => week.filter(c => c.sentiment === s).length;
+  const pos = n("positive"), neg = n("negative"), neu = week.length - pos - neg;
+  const pct = x => week.length ? Math.round(x / week.length * 100) : 0;
+  const needs = all.filter(c => c.needs_you && c.action !== "hidden");
+  const show = all.filter(c => f === "all" || (f === "needs" ? c.needs_you && c.action !== "hidden"
+    : f === "negative" ? c.sentiment === "negative" : f === "hidden" ? c.action === "hidden" : true));
+  $("#tab-comments").innerHTML = `
+    <div class="panel"><h2>Comment health (last 7 days)</h2>
+      <div class="tiles" style="margin:0">
+        <div class="tile"><span>Positive</span><b style="color:var(--ok)">${pct(pos)}%</b><span class="delta">${pos} comments</span></div>
+        <div class="tile"><span>Neutral</span><b>${pct(neu)}%</b><span class="delta">${neu} comments</span></div>
+        <div class="tile"><span>Negative</span><b style="color:var(--danger)">${pct(neg)}%</b><span class="delta">${neg} comments</span></div>
+      </div>
+      <p class="hint">Checked every hour on all videos. Questions, "it's AI", "fake" and corrections always get an honest
+        reply; others about half the time. Abuse and spam are hidden automatically; honest criticism is never removed.</p>
+    </div>
+    ${needs.length ? `<div class="banner warn"><span class="dot"></span><div><b>${needs.length} comment(s) need you</b>The automation could not verify these by itself. Read them below.</div></div>` : ""}
+    <div class="chips">${[["all", "All"], ["needs", "Needs you"], ["negative", "Negative"], ["hidden", "Hidden"]].map(([k, l]) =>
+      `<button class="chip ${k === f ? "on" : ""}" data-cf="${k}">${l}</button>`).join("")}</div>
+    ${show.length ? show.map(c => { const [label, cls] = c.needs_you && c.action !== "hidden" ? CACTION.flagged : (CACTION[c.action] || [String(c.action || "").toUpperCase(), "b-private"]);
+      return `<div class="panel" style="padding:12px 14px">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+          <span class="badge b-lang">${esc(CTYPE[c.type] || c.type)}</span>
+          <span class="badge" style="color:${c.sentiment === "negative" ? "var(--danger)" : c.sentiment === "positive" ? "var(--ok)" : "var(--muted)"}">${esc(c.sentiment || "")}</span>
+          <span class="badge ${cls}">${label}</span>
+          <span class="muted" style="font-size:12px;margin-left:auto">${c.commented_at ? ago(c.commented_at) : ""}</span></div>
+        <div style="font-size:15px">“${esc(c.text)}”</div>
+        <div class="muted" style="font-size:12.5px;margin-top:4px">on <a href="https://youtu.be/${esc(c.video_id)}" target="_blank" rel="noopener">${esc(c.video_title || c.video_id)}</a></div>
+        ${c.reply ? `<div style="font-size:13.5px;margin-top:6px;padding-left:10px;border-left:3px solid var(--line)">↳ ${esc(c.reply)}</div>` : ""}
+        ${c.action !== "hidden" && !c.hide_requested ? `<div class="actions" style="margin-top:8px"><button class="btn" data-hide="${esc(c.id)}">Hide</button></div>`
+          : c.hide_requested && c.action !== "hidden" ? '<p class="hint">Hiding within 10 minutes…</p>' : ""}
+      </div>`; }).join("") : '<div class="hint">No comments here yet. New comments appear within an hour.</div>'}`;
+  document.querySelectorAll("[data-cf]").forEach(b => b.onclick = () => { S.cfilter = b.dataset.cf; renderComments(); });
+  document.querySelectorAll("[data-hide]").forEach(b => b.onclick = async () => {
+    if (!confirm("Hide this comment on YouTube?")) return;
+    const { error } = await db.from("comments").update({ hide_requested: true }).eq("id", b.dataset.hide);
+    if (error) return toast("Error: " + error.message);
+    const c = S.comments.find(x => x.id === b.dataset.hide); if (c) c.hide_requested = true;
+    renderComments(); toast("Will be hidden within 10 minutes");
+  });
+}
 // ---------- YouTube login button ----------
 // Google sends a one-time code back to this page; it goes into yt_login_requests and the cloud clock trades it for
 // a lasting login within a minute. The page never sees the login itself, and the client secret stays in the cloud.
@@ -701,7 +756,7 @@ async function finishYtLogin() {
   setTimeout(() => { loadAll(); }, 75000);
 }
 // ---------- shell ----------
-const TITLES = { home: "Home", videos: "Videos", insights: "Insights", auto: "Automation", more: "More" };
+const TITLES = { home: "Home", videos: "Videos", insights: "Insights", comments: "Comments", auto: "Automation", more: "More" };
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
   document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
   Object.keys(TITLES).forEach(t => $("#tab-" + t).hidden = t !== b.dataset.tab);
