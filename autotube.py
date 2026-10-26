@@ -958,12 +958,18 @@ wording ONLY. Strict rules for the rewrite:
 Return JSON only: {{"score": 0, "weakest": ["..."], "improved_script": "..."}}""", required=("score", "improved_script"))
         before = int(res.get("score") or 0)
         better = clean_script(res.get("improved_script") or "").get("script") or ""
+        if better and L()["follow_line"] in original and L()["follow_line"] not in better:
+            # the model sometimes drops the subscribe line: put it back about 60% in, where it was
+            parts = split_sentences(better)
+            parts.insert(max(1, round(len(parts) * 0.6)), L()["follow_line"])
+            better = " ".join(parts)
         words, new_words = len(original.split()), len(better.split())
-        if (not better or L()["follow_line"] not in better or not same_writing(original, better)
-                or not 0.8 * words <= new_words <= 1.2 * words):
+        # shorter is fine (cutting filler is the point; 56% of rewrites were wasted by a +-20% rule), too short is not
+        if not better or not same_writing(original, better) or not 0.7 * words <= new_words <= 1.2 * words:
             meta["script_score"] = before
-            log(f"[short] script score {before}; rewrite not usable, keeping the original")
+            log(f"[short] script score {before}; rewrite not usable ({new_words} vs {words} words), keeping the original")
             return meta
+        better = fix_dangling_end(better)
         check = llm_json(f"""{SCRIPT_RUBRIC}
 
 ORIGINAL SCRIPT:
