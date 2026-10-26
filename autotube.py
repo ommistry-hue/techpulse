@@ -214,7 +214,56 @@ def openrouter(prompt, model, timeout=None):
     return data["choices"][0]["message"]["content"]
 
 
+def github_models(prompt, model, timeout=None):
+    """GitHub Models: free inference with the workflow's own GITHUB_TOKEN (no signup, no extra key). Last backup
+    when Gemini and OpenRouter are down or rate-limited; its free limits are small, so it is tried last."""
+    r = requests.post(
+        "https://models.github.ai/inference/chat/completions",
+        headers={"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}", "Content-Type": "application/json"},
+        json={"model": model, "temperature": 0.9,
+              "messages": [{"role": "user", "content": prompt + "\n\nRespond with the JSON object only."}]},
+        timeout=timeout or LLM_TIMEOUT,
+    )
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
+
+
 _FREE_MODELS = None
+_GEMINI_FOUND = None
+_GH_MODELS = None
+
+
+def gemini_discovered():
+    """Google renames/retires Gemini models; list the live ones once per run and keep a few flash models as backup."""
+    global _GEMINI_FOUND
+    if _GEMINI_FOUND is None:
+        try:
+            data = requests.get("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
+                                headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]}, timeout=30).json()
+            names = [m["name"].split("/")[-1] for m in data.get("models", [])
+                     if "generateContent" in m.get("supportedGenerationMethods", [])]
+            skip = ("image", "tts", "audio", "live", "embedding", "exp", "preview", "vision", "learnlm")
+            flash = [n for n in names if "flash" in n and not any(s in n for s in skip)]
+            _GEMINI_FOUND = sorted(flash, key=lambda n: ("lite" in n, n), reverse=False)[:4]
+        except Exception as e:
+            log(f"Gemini model list failed: {e}")
+            _GEMINI_FOUND = []
+    return _GEMINI_FOUND
+
+
+def github_models_list():
+    """Chat models in the GitHub Models catalog (read live; falls back to known ids)."""
+    global _GH_MODELS
+    if _GH_MODELS is None:
+        known = ["openai/gpt-4.1-mini", "openai/gpt-4o-mini", "deepseek/DeepSeek-V3-0324", "meta/Llama-3.3-70B-Instruct"]
+        try:
+            cat = requests.get("https://models.github.ai/catalog/models", timeout=30,
+                               headers={"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}"}).json()
+            ids = {m["id"] for m in cat}
+            _GH_MODELS = [m for m in known if m in ids] or known
+        except Exception:
+            _GH_MODELS = known
+    return _GH_MODELS
 
 
 def openrouter_free_models():
@@ -237,11 +286,31 @@ def llm_providers():
     split = lambda v: [m.strip() for m in os.environ.get(v, "").split(",") if m.strip()]
     providers = []
     if os.environ.get("GEMINI_API_KEY"):
-        providers += [(gemini, m) for m in split("GEMINI_MODELS") or ["gemini-flash-latest"]]
+        preferred = split("GEMINI_MODELS") or ["gemini-flash-latest"]
+        providers += [(gemini, m) for m in preferred + [m for m in gemini_discovered() if m not in preferred]]
     if os.environ.get("OPENROUTER_API_KEY"):
         preferred = split("OPENROUTER_MODELS")
         providers += [(openrouter, m) for m in preferred + [m for m in openrouter_free_models() if m not in preferred]]
+    if os.environ.get("GITHUB_TOKEN") and os.environ.get("GITHUB_ACTIONS"):  # only in the cloud runs
+        providers += [(github_models, m) for m in github_models_list()]
     return providers
+
+
+def llm_check():
+    """Health check of every AI model in the chain (--llm-check): which ones answer right now."""
+    ok = 0
+    for call, model in llm_providers():
+        try:
+            parse_json(call('Return JSON only: {"ok": true}', model, 60))
+            ok += 1
+            log(f"  OK   {call.__name__}/{model}")
+        except Exception as e:
+            log(f"  FAIL {call.__name__}/{model}: {str(e)[:100]}")
+    log(f"LLM check: {ok} of {len(llm_providers())} models answering")
+    if sb_on():
+        sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates", json={
+            "key": "llm_health", "value": {"ok": ok, "total": len(llm_providers()),
+                                           "at": datetime.datetime.now(datetime.timezone.utc).isoformat()}})
 
 
 _LLM_BENCH = {}  # model -> time until which it is skipped (rate-limited, overloaded, or gone for this run)
@@ -3686,8 +3755,12 @@ def main():
     ap.add_argument("--followup", help="make a part-2 Short for this breakout Short (YouTube id)")
     ap.add_argument("--viral", action="store_true", help="make one viral-format Short (versus, top 3, tricks...)")
     ap.add_argument("--project", type=int, choices=(1, 2), default=1, help="with --auth: which Google Cloud project to log in")
+    ap.add_argument("--llm-check", action="store_true", help="test every AI model in the fallback chain")
     args = ap.parse_args()
     load_env()
+    if args.llm_check:
+        llm_check()
+        return
     global LANG, PROJECT, SAFETY_PAUSE
     LANG = args.lang
     if args.auth:
