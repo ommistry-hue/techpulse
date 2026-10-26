@@ -2341,7 +2341,8 @@ Return JSON only: {{"comments": [{{"id": "...", "type": "...", "sentiment": "...
             continue
         kind, text = (r.get("type") or "opinion").strip().lower(), (r.get("reply") or "").strip()[:300]
         row = {"id": c["id"], "video_id": c["video_id"], "video_title": c["video"][:200], "lang": c["lang"],
-               "text": c["text"], "type": kind, "sentiment": r.get("sentiment") or "neutral", "action": "skipped",
+               "text": c["text"], "type": kind, "sentiment": r.get("sentiment") or "neutral",
+               "action": "answered_before" if c["answered"] else "skipped",
                "reply": None, "needs_you": False, "commented_at": c["at"], "handled_at": now.isoformat()}
         if kind in HIDE_TYPES:
             try:

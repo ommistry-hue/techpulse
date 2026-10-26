@@ -674,7 +674,7 @@ const CTYPE = { question: "Question", ai_callout: "Says it's AI", fake: "Says fa
   request: "Topic request", risky: "Risky", opinion: "Opinion", praise: "Praise", criticism: "Criticism",
   abuse: "Abuse", spam: "Spam", emoji: "Emoji" };
 const CACTION = { replied: ["REPLIED", "b-public"], corrected: ["CORRECTED", "b-public"], hidden: ["HIDDEN", "b-private"],
-  skipped: ["NO REPLY", "b-private"], flagged: ["NEEDS YOU", "b-held"] };
+  skipped: ["NO REPLY", "b-private"], answered_before: ["REPLIED EARLIER", "b-public"], flagged: ["NEEDS YOU", "b-held"] };
 function renderComments() {
   const all = S.comments || [], f = S.cfilter || "all";
   const week = all.filter(c => new Date(c.commented_at || c.handled_at) > new Date(Date.now() - 7 * 86400000));
