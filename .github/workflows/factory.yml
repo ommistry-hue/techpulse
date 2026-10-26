@@ -38,7 +38,6 @@ concurrency:
 
 permissions:
   contents: read
-  models: read     # GitHub Models: free backup AI (uses the workflow's own token)
 
 jobs:
   make:
@@ -51,7 +50,6 @@ jobs:
       PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-      GITHUB_TOKEN: ${{ github.token }}   # GitHub Models backup AI (models: read)
       YT_TOKEN_JSON: ${{ secrets.YT_TOKEN_JSON }}
       YT_TOKEN_JSON_2: ${{ secrets.YT_TOKEN_JSON_2 }}
       YT_CLIENT_SECRET_JSON_2: ${{ secrets.YT_CLIENT_SECRET_JSON_2 }}

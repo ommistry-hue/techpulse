@@ -214,23 +214,8 @@ def openrouter(prompt, model, timeout=None):
     return data["choices"][0]["message"]["content"]
 
 
-def github_models(prompt, model, timeout=None):
-    """GitHub Models: free inference with the workflow's own GITHUB_TOKEN (no signup, no extra key). Last backup
-    when Gemini and OpenRouter are down or rate-limited; its free limits are small, so it is tried last."""
-    r = requests.post(
-        "https://models.github.ai/inference/chat/completions",
-        headers={"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}", "Content-Type": "application/json"},
-        json={"model": model, "temperature": 0.9,
-              "messages": [{"role": "user", "content": prompt + "\n\nRespond with the JSON object only."}]},
-        timeout=timeout or LLM_TIMEOUT,
-    )
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
-
-
 _FREE_MODELS = None
 _GEMINI_FOUND = None
-_GH_MODELS = None
 
 
 def gemini_discovered():
@@ -249,21 +234,6 @@ def gemini_discovered():
             log(f"Gemini model list failed: {e}")
             _GEMINI_FOUND = []
     return _GEMINI_FOUND
-
-
-def github_models_list():
-    """Chat models in the GitHub Models catalog (read live; falls back to known ids)."""
-    global _GH_MODELS
-    if _GH_MODELS is None:
-        known = ["openai/gpt-4.1-mini", "openai/gpt-4o-mini", "deepseek/DeepSeek-V3-0324", "meta/Llama-3.3-70B-Instruct"]
-        try:
-            cat = requests.get("https://models.github.ai/catalog/models", timeout=30,
-                               headers={"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}"}).json()
-            ids = {m["id"] for m in cat}
-            _GH_MODELS = [m for m in known if m in ids] or known
-        except Exception:
-            _GH_MODELS = known
-    return _GH_MODELS
 
 
 def openrouter_free_models():
@@ -291,8 +261,6 @@ def llm_providers():
     if os.environ.get("OPENROUTER_API_KEY"):
         preferred = split("OPENROUTER_MODELS")
         providers += [(openrouter, m) for m in preferred + [m for m in openrouter_free_models() if m not in preferred]]
-    if os.environ.get("GITHUB_TOKEN") and os.environ.get("GITHUB_ACTIONS"):  # only in the cloud runs
-        providers += [(github_models, m) for m in github_models_list()]
     return providers
 
 
