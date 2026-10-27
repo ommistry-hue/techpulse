@@ -342,6 +342,11 @@ function goalsPanel() {
 }
 
 // ---------- Today: every slot of the viewer's day with its outcome and reason ----------
+// Mirrors RECOVERY_SLOTS in autotube.py: the only slots that run while recovery mode is on.
+const RECOVERY_SLOTS = new Set(["00:13 en", "02:37 en viral", "06:13 en", "09:49 hi viral", "12:13 en", "15:49 hi viral",
+  "18:13 en viral", "21:49 en"]);
+const inRecovery = at => { const r = S.settings.recovery; return !!(r && r.until >= at.toISOString().slice(0, 10)
+  && (!r.started || r.started <= at.toISOString().slice(0, 10))); };
 function todayItems() {
   const now = new Date(), start = new Date(now); start.setHours(0, 0, 0, 0);
   const end = new Date(start.getTime() + 86400000), log = Object.fromEntries((S.slots || []).map(r => [r.key, r]));
@@ -350,6 +355,7 @@ function todayItems() {
     const at = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + d, s.utc[0], s.utc[1]));
     if (at < start || at >= end) continue;
     const name = `${at.toISOString().slice(0, 10)} ${at.toISOString().slice(11, 16)} ${s.lang}${s.what.includes("viral") ? " viral" : ""}`;
+    if (inRecovery(at) && !RECOVERY_SLOTS.has(name.slice(11))) continue;  // resting slot in recovery mode: not shown
     const row = log[`${name}|${s.lang}`], retry = log[`${name} retry|${s.lang}`];
     [row, retry].forEach(r => r && used.add(r.key));
     items.push({ at, lang: s.lang, what: s.what, row: retry && (!row || row.status === "failed") ? retry : row, retried: !!retry });
