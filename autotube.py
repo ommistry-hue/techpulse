@@ -465,6 +465,39 @@ RECOVERY_SLOTS = {"00:13 en", "02:37 en viral", "06:13 en", "09:49 hi viral", "1
 RECOVERED_VIEWS_24H = 50  # median views at 24 h that counts as "YouTube is testing our Shorts normally again"
 
 
+NORMAL_MIN_SCORE = 55     # script score a Short needs outside recovery (one stronger rewrite, else not uploaded)
+THROTTLE_VIEWS = 15       # median views of new Shorts (6-30 h old) below this = YouTube stopped testing them
+MIN_GAP_MIN = 50          # never two uploads closer than this (bursts look like spam)
+
+
+def preflight(note):
+    """Runs before any script is written: (1) detects that YouTube stopped showing new Shorts and switches recovery
+    mode on by itself, (2) keeps uploads spaced out. Returns a reason to skip this slot, or None to go ahead."""
+    global RECOVERY
+    if not sb_on():
+        return None
+    now = datetime.datetime.now(datetime.timezone.utc)
+    fmt = lambda h: (now - datetime.timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if not RECOVERY:
+        fresh = sorted(r["views"] or 0 for r in sb_rest(
+            "GET", f"insights?select=views&kind=eq.short&created_at=gte.{fmt(30)}&created_at=lt.{fmt(6)}"))
+        if len(fresh) >= 5 and fresh[len(fresh) // 2] < THROTTLE_VIEWS:
+            until = str(datetime.date.today() + datetime.timedelta(days=5))
+            sb_rest("POST", "settings?on_conflict=key", prefer="resolution=merge-duplicates", json={
+                "key": "recovery", "value": {"until": until, "started": str(datetime.date.today()), "reason":
+                    f"auto: {len(fresh)} new Shorts got a median of {fresh[len(fresh) // 2]} views in 6-30 h"}})
+            log(f"preflight: new Shorts median {fresh[len(fresh) // 2]} views -> YouTube is not testing them; "
+                f"recovery mode ON until {until}")
+            apply_recovery()
+    if "breaking" not in note:
+        last = sb_rest("GET", "videos?select=created_at&youtube_id=not.is.null&order=created_at.desc&limit=1")
+        if last:
+            gap = (now - datetime.datetime.fromisoformat(last[0]["created_at"].replace("Z", "+00:00"))).total_seconds() / 60
+            if gap < MIN_GAP_MIN:
+                return f"last upload only {gap:.0f} min ago (min {MIN_GAP_MIN}): spacing uploads out"
+    return None
+
+
 def apply_recovery():
     """Read recovery mode once per run: each story only once per 48 h while it is on."""
     global RECOVERY, STORY_MAX
@@ -1098,12 +1131,13 @@ def write_checked(write, ctx, kind):
     polish = (lambda m: title_doctor(script_doctor(m))) if kind == "short" else (lambda m: m)
     meta = fact_check(polish(write("")), ctx, kind)
     if not meta.get("hold"):
-        if RECOVERY and kind == "short" and (meta.get("script_score") or 0) < RECOVERY_MIN_SCORE:
-            log(f"[short] script score {meta.get('script_score')} < {RECOVERY_MIN_SCORE} in recovery mode, one stronger rewrite")
+        bar = RECOVERY_MIN_SCORE if RECOVERY else NORMAL_MIN_SCORE  # quality bar before anything is built
+        if kind == "short" and meta.get("script_score") is not None and meta["script_score"] < bar:
+            log(f"[short] script score {meta['script_score']} < {bar}, one stronger rewrite")
             meta = fact_check(polish(write(". REWRITE STRONGER: hook names the product and the stakes in under 10 words, "
                                            "one concrete number, a clear verdict, a 'why it matters to you' line")), ctx, kind)
-            if meta.get("hold") or (meta.get("script_score") or 0) < RECOVERY_MIN_SCORE:
-                raise RuntimeError(f"weak script (score {meta.get('script_score')}): not uploaded in recovery mode")
+            if meta.get("hold") or (meta.get("script_score") or 0) < bar:
+                raise RuntimeError(f"weak script (score {meta.get('script_score')} < {bar}): not uploaded")
         return meta
     issues = meta["fact_check"]["issues"]
     if any(str(i).startswith("SAFETY") for i in issues):
@@ -3663,6 +3697,16 @@ def _run_videos(args, planner, note):
     history = json.loads(HISTORY.read_text(encoding="utf-8")) if HISTORY.exists() else []
     used = used_topics()
     niche = os.environ.get("NICHE", "technology and AI")
+    if not args.no_upload:
+        try:
+            why = preflight(note)
+        except Exception as e:
+            why = None
+            log(f"preflight skipped ({str(e)[:120]})")
+        if why:
+            log(f"preflight: {why}")
+            slot_status("skipped", why, note=note)
+            return 0
     slot = os.environ.get("CLOCK_SLOT", "").removesuffix(" retry")[11:]  # "2026-10-26 09:49 hi viral" -> "09:49 hi viral"
     if RECOVERY and slot and "breaking" not in slot and slot not in RECOVERY_SLOTS:
         log(f"recovery mode: slot '{slot}' rests today (fewer, stronger videos)")
