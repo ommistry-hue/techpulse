@@ -422,6 +422,8 @@ TOPIC_SCORE = ("TOPIC SCORE - rate each candidate story and pick the highest:\n"
                "+2 for Hindi: an India angle in the sources (India price in rupees, India launch date, Jio/Airtel, UPI,"
                " Flipkart/Amazon India)\n"
                "+1 something the viewer can do or check today\n"
+               "+3 gaming and big launches (GTA, Cyberpunk, PlayStation, Xbox, Nintendo, Steam, RTX/GPUs, Apple or Samsung"
+               " flagship launches): our gaming Shorts get ~2.5x the views of others\n"
                "-3 abstract research, academic papers, enterprise/B2B tools, funding rounds or company reorganisations"
                " with no product people use")
 
@@ -462,10 +464,13 @@ RECOVERY_MIN_SCORE = 70  # script score a Short needs to be uploaded during reco
 # clock slots that still run during recovery: one every ~3 h, mostly English (UTC "HH:MM lang[ viral]")
 RECOVERY_SLOTS = {"00:13 en", "02:37 en viral", "06:13 en", "09:49 hi viral", "12:13 en", "15:49 hi viral",
                   "18:13 en viral", "21:49 en"}
-RECOVERED_VIEWS_24H = 50  # median views at 24 h that counts as "YouTube is testing our Shorts normally again"
+RECOVERED_VIEWS_24H = 40  # median views at 24 h that counts as "YouTube is testing our Shorts normally again"
+                          # (throttled Shorts got 0-11; after recovery the median was 35-57)
 
 
-NORMAL_MIN_SCORE = 55     # script score a Short needs outside recovery (one stronger rewrite, else not uploaded)
+NORMAL_MIN_SCORE = 55     # below this a Short gets one stronger rewrite (the better version is kept)
+NORMAL_FLOOR_SCORE = 40   # below this a Short is not uploaded (55 cost 14 slots in 5 days)
+HINDI_PER_DAY = 1         # Hindi Shorts per 24 h (Oct 26-Nov 1: EN median 57 views at 24 h, HI 26); setting "hindi_per_day"
 THROTTLE_VIEWS = 15       # median views of new Shorts (6-30 h old) below this = YouTube stopped testing them
 MIN_GAP_MIN = 50          # never two uploads closer than this (bursts look like spam)
 
@@ -489,6 +494,10 @@ def preflight(note):
             log(f"preflight: new Shorts median {fresh[len(fresh) // 2]} views -> YouTube is not testing them; "
                 f"recovery mode ON until {until}")
             apply_recovery()
+    if LANG == "hi" and "breaking" not in note:
+        cap = int(get_setting("hindi_per_day", HINDI_PER_DAY) or 0)
+        if uploads_24h("hi") >= cap:
+            return f"Hindi limited to {cap}/day for now (English Shorts get ~2x the views)"
     if "breaking" not in note:
         last = sb_rest("GET", "videos?select=created_at&youtube_id=not.is.null&order=created_at.desc&limit=1")
         if last:
@@ -1090,7 +1099,7 @@ Return JSON only: {{"score": 0, "weakest": ["..."], "improved_script": "..."}}""
             better = " ".join(parts)
         words, new_words = len(original.split()), len(better.split())
         # shorter is fine (cutting filler is the point; 56% of rewrites were wasted by a +-20% rule), too short is not
-        if not better or not same_writing(original, better) or not 0.7 * words <= new_words <= 1.2 * words:
+        if not better or not same_writing(original, better) or not 0.6 * words <= new_words <= 1.2 * words:
             meta["script_score"] = before
             log(f"[short] script score {before}; rewrite not usable ({new_words} vs {words} words), keeping the original")
             return meta
@@ -1131,13 +1140,16 @@ def write_checked(write, ctx, kind):
     polish = (lambda m: title_doctor(script_doctor(m))) if kind == "short" else (lambda m: m)
     meta = fact_check(polish(write("")), ctx, kind)
     if not meta.get("hold"):
-        bar = RECOVERY_MIN_SCORE if RECOVERY else NORMAL_MIN_SCORE  # quality bar before anything is built
+        bar = RECOVERY_MIN_SCORE if RECOVERY else NORMAL_MIN_SCORE  # below this: one stronger rewrite
+        floor = RECOVERY_MIN_SCORE if RECOVERY else NORMAL_FLOOR_SCORE  # below this: not uploaded at all
         if kind == "short" and meta.get("script_score") is not None and meta["script_score"] < bar:
             log(f"[short] script score {meta['script_score']} < {bar}, one stronger rewrite")
-            meta = fact_check(polish(write(". REWRITE STRONGER: hook names the product and the stakes in under 10 words, "
-                                           "one concrete number, a clear verdict, a 'why it matters to you' line")), ctx, kind)
-            if meta.get("hold") or (meta.get("script_score") or 0) < bar:
-                raise RuntimeError(f"weak script (score {meta.get('script_score')} < {bar}): not uploaded")
+            second = fact_check(polish(write(". REWRITE STRONGER: hook names the product and the stakes in under 10 words, "
+                                             "one concrete number, a clear verdict, a 'why it matters to you' line")), ctx, kind)
+            if not second.get("hold") and (second.get("script_score") or 0) > meta["script_score"]:
+                meta = second  # keep the better of the two (a failed retry no longer costs the slot)
+            if (meta.get("script_score") or 0) < floor:
+                raise RuntimeError(f"weak script (score {meta.get('script_score')} < {floor}): not uploaded")
         return meta
     issues = meta["fact_check"]["issues"]
     if any(str(i).startswith("SAFETY") for i in issues):
